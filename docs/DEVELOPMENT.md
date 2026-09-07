@@ -1,0 +1,99 @@
+# 開発ガイド
+
+## 前提環境
+
+| 要件 | 備考 |
+| --- | --- |
+| Linux、または Windows + WSL2 | 主開発環境として想定 |
+| Rust toolchain | 1.82 以降（`rustup`） |
+| Docker Engine + Compose | M3 以降、疑似クラスタに必要 |
+
+実 Slurm クラスタは開発環境では **ありません**。
+日常の作業は unit test、in-process simulation、Docker 疑似クラスタに対して行います。
+
+## ビルドと検査
+
+```bash
+cargo build
+```
+
+常に緑を維持すべき 3 つの検査（CI でも実行）:
+
+```bash
+cargo fmt --check
+```
+
+```bash
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+```bash
+cargo test --all
+```
+
+## テスト階層
+
+| Level | 対象 | 必要なもの |
+| --- | --- | --- |
+| 1 — unit / mock | domain model、config、parser、graph、state、rule、DB、protocol | なし |
+| 2 — in-process simulation | 人工 observation を state → diagnosis → incident へ流す | なし |
+| 3 — Docker 疑似クラスタ | 実 agent・実 controller・実 Slurm、障害注入 | Docker |
+| 4 — VM / 実クラスタ | reboot、boot ID、NFS hard mount、D-state、実 GPU | VM または実機 |
+
+Level 1 と 2 は、Rust toolchain さえあれば Docker 無しで必ず通ります。
+
+## Docker で保証できないもの
+
+疑似クラスタ（M3 以降）は service / process / network 障害を忠実に再現しますが、
+以下は再現 **しません**。
+
+* 実機 reboot の semantics と boot ID の変化
+* kernel hard lock と真の D-state
+* NFS hard-mount による kernel stall
+* 実 systemd host の挙動
+* SMART / NVMe、GPU、NIC のハードウェア障害
+* IPMI / BMC、物理電源断
+
+これらは level 4 の責務であり、コンテナで近似するのではなく
+VM テスト要件として記録します。
+
+## リポジトリ構成
+
+```text
+src/
+  entity/       ManagedEntity、identity
+  capability/   Capability とその解決
+  dependency/   有向グラフ、cycle-safe traversal
+  observation/  immutable な probe 結果
+  probes/       Probe interface（配下に integration）
+  state/        導出された health、debounce
+  diagnosis/    typed rule
+  incident/     correlation と lifecycle
+  persistence/  SQLite repository
+  config/       設定、優先順位、検証
+  cli/          サブコマンド
+migrations/     SQL migration（順に適用）
+fixtures/       parser test 用の実コマンド出力
+tests/          integration / simulation / scenario test
+dev/compose/    Docker 疑似クラスタ（M3 以降）
+```
+
+## 規約
+
+* core / library 層は typed error（`thiserror`）、CLI 境界は `anyhow` を使用します。
+* `unwrap()` / `expect()` はテストと、失敗し得ないことが証明できる箇所に限ります。
+* probe の失敗が daemon を panic させてはなりません。
+* 外部コマンドは必ず timeout と出力サイズ制限のもとで実行します。
+* `src/` に host 名・address・partition 名・storage topology を書きません。
+  fixture・設定・テストが正しい置き場所です。
+
+## Probe の追加手順
+
+1. Capability 名を決める（広く有用なら `src/capability/mod.rs::well_known` へ。
+   型自体は任意の文字列を受け付けます）。
+2. `src/probes/<integration>/` 配下に `Probe` を実装します。
+3. payload には **raw fact のみ** を返します。結論を出してはいけません。
+4. 新しい fact が根拠となる diagnosis rule があれば追加します。
+
+state engine・incident engine・database schema への変更は不要なはずです。
+もし必要になったなら、それは抽象化が漏れているということであり、議論に値します。

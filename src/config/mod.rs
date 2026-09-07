@@ -1,0 +1,458 @@
+//! Configuration.
+//!
+//! Deployment data — host names, addresses, partitions, storage topology —
+//! lives here, in runtime discovery, or in fixtures. Never in core code
+//! (SPEC.md §129, IMPLEMENTATION.md §101).
+//!
+//! Precedence, highest first (IMPLEMENTATION.md §58):
+//!
+//! ```text
+//! CLI > environment variable > config file > runtime discovery > built-in default
+//! ```
+//!
+//! Every resolved value remembers where it came from so `sentinel config check`
+//! can show it.
+
+mod precedence;
+mod validate;
+
+pub use precedence::{Layered, ValueSource};
+pub use validate::{validate, Severity as IssueSeverity, ValidationIssue, ValidationReport};
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::capability::CapabilityOverride;
+use crate::CONFIG_VERSION;
+
+/// Default location of the configuration file (IMPLEMENTATION.md §59).
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/sentinel/config.toml";
+/// Default state directory.
+pub const DEFAULT_STATE_DIR: &str = "/var/lib/sentinel";
+
+/// Failure to load or accept a configuration.
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    /// The file could not be read.
+    #[error("cannot read config file {path}: {source}")]
+    Read {
+        /// The path that failed.
+        path: PathBuf,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The file is not valid TOML, or does not match the schema.
+    #[error("invalid config file {path}: {source}")]
+    Parse {
+        /// The path that failed.
+        path: PathBuf,
+        /// The underlying parse error.
+        #[source]
+        source: toml::de::Error,
+    },
+    /// The file declares a schema version this build does not understand.
+    ///
+    /// Refusing is deliberate: silently ignoring unknown newer settings would
+    /// mean monitoring something other than what the operator described
+    /// (IMPLEMENTATION.md §57).
+    #[error("config_version {found} is newer than this build supports ({supported}); upgrade sentinel")]
+    UnsupportedVersion {
+        /// The version in the file.
+        found: u32,
+        /// The version this build supports.
+        supported: u32,
+    },
+    /// The file is missing `config_version`.
+    #[error("config_version is required")]
+    MissingVersion,
+}
+
+/// The parsed configuration file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    /// Schema version of this file.
+    pub config_version: u32,
+    /// The environment this node belongs to.
+    #[serde(default = "default_environment")]
+    pub environment: String,
+    /// Controller settings.
+    #[serde(default)]
+    pub controller: ControllerConfig,
+    /// Agent settings.
+    #[serde(default)]
+    pub agent: AgentConfig,
+    /// Database settings.
+    #[serde(default)]
+    pub database: DatabaseConfig,
+    /// Peer monitoring settings.
+    #[serde(default)]
+    pub peer_monitoring: PeerMonitoringConfig,
+    /// Operator capability overrides, keyed by capability name.
+    #[serde(default)]
+    pub capabilities: BTreeMap<String, CapabilityOverride>,
+    /// Statically declared entities (SPEC.md §33).
+    #[serde(default)]
+    pub entities: Vec<EntityConfig>,
+    /// Statically declared dependency edges.
+    #[serde(default)]
+    pub dependencies: Vec<DependencyConfig>,
+    /// Integration toggles.
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
+}
+
+fn default_environment() -> String {
+    "default".to_string()
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            config_version: CONFIG_VERSION,
+            environment: default_environment(),
+            controller: ControllerConfig::default(),
+            agent: AgentConfig::default(),
+            database: DatabaseConfig::default(),
+            peer_monitoring: PeerMonitoringConfig::default(),
+            capabilities: BTreeMap::new(),
+            entities: Vec::new(),
+            dependencies: Vec::new(),
+            discovery: DiscoveryConfig::default(),
+        }
+    }
+}
+
+impl Config {
+    /// Parse a configuration from TOML text.
+    pub fn from_toml(text: &str, path: &Path) -> Result<Self, ConfigError> {
+        // Check the version before full deserialization so that a file from a
+        // newer sentinel produces a clear "upgrade" error rather than a
+        // confusing unknown-field error.
+        let probe: VersionProbe = toml::from_str(text).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let Some(version) = probe.config_version else {
+            return Err(ConfigError::MissingVersion);
+        };
+        if version > CONFIG_VERSION {
+            return Err(ConfigError::UnsupportedVersion {
+                found: version,
+                supported: CONFIG_VERSION,
+            });
+        }
+        toml::from_str(text).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// Load a configuration from disk.
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Self::from_toml(&text, path)
+    }
+}
+
+#[derive(Deserialize)]
+struct VersionProbe {
+    config_version: Option<u32>,
+}
+
+/// Controller settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerConfig {
+    /// Address the controller listens on.
+    #[serde(default = "default_listen")]
+    pub listen: String,
+    /// How often inventory discovery runs.
+    #[serde(default = "default_inventory_interval", with = "humantime_serde")]
+    pub inventory_interval: Duration,
+}
+
+fn default_listen() -> String {
+    "0.0.0.0:7443".to_string()
+}
+
+fn default_inventory_interval() -> Duration {
+    Duration::from_secs(300)
+}
+
+impl Default for ControllerConfig {
+    fn default() -> Self {
+        Self {
+            listen: default_listen(),
+            inventory_interval: default_inventory_interval(),
+        }
+    }
+}
+
+/// Agent settings.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    /// Controller address to report to, e.g. `controller.example:7443`.
+    ///
+    /// Deliberately has no default: no host name belongs in the binary
+    /// (SPEC.md §42).
+    #[serde(default)]
+    pub controller_address: Option<String>,
+    /// Path of the local spool database.
+    #[serde(default)]
+    pub spool_path: Option<PathBuf>,
+    /// Roles, used only for UI grouping and default hints (SPEC.md §14, §15).
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+/// Database settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DatabaseConfig {
+    /// Path of the controller database.
+    #[serde(default = "default_database_path")]
+    pub path: PathBuf,
+}
+
+fn default_database_path() -> PathBuf {
+    PathBuf::from(DEFAULT_STATE_DIR).join("sentinel.db")
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            path: default_database_path(),
+        }
+    }
+}
+
+/// Peer monitoring settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerMonitoringConfig {
+    /// How many observers watch each entity (SPEC.md §47).
+    #[serde(default = "default_peer_degree")]
+    pub degree: u32,
+}
+
+fn default_peer_degree() -> u32 {
+    3
+}
+
+impl Default for PeerMonitoringConfig {
+    fn default() -> Self {
+        Self {
+            degree: default_peer_degree(),
+        }
+    }
+}
+
+/// Integration discovery toggles.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryConfig {
+    /// Slurm discovery.
+    #[serde(default)]
+    pub slurm: SlurmDiscoveryConfig,
+}
+
+/// Slurm discovery settings. Slurm is one integration among others, never the
+/// inventory itself (SPEC.md §31).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlurmDiscoveryConfig {
+    /// Whether to run Slurm discovery.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Optional path to `scontrol`, if it is not on `PATH`.
+    #[serde(default)]
+    pub scontrol_path: Option<PathBuf>,
+}
+
+/// A statically declared entity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntityConfig {
+    /// Entity type, e.g. `host` or `storage`.
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    /// Canonical name.
+    pub name: String,
+    /// Optional display name.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Optional cluster.
+    #[serde(default)]
+    pub cluster: Option<String>,
+    /// Operator labels.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    /// Capabilities to declare for this entity.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Addresses to reach this entity at. Never used as identity.
+    #[serde(default)]
+    pub addresses: Vec<String>,
+}
+
+/// A statically declared dependency edge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyConfig {
+    /// Dependent entity, as `type/name`.
+    pub from: String,
+    /// Depended-upon entity, as `type/name`.
+    pub to: String,
+    /// Dependency type; defaults to `depends_on`.
+    #[serde(default = "default_dependency_type", rename = "type")]
+    pub dependency_type: String,
+    /// Criticality; defaults to `critical`.
+    #[serde(default = "default_criticality")]
+    pub criticality: String,
+}
+
+fn default_dependency_type() -> String {
+    "depends_on".to_string()
+}
+
+fn default_criticality() -> String {
+    "critical".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> Result<Config, ConfigError> {
+        Config::from_toml(text, Path::new("test.toml"))
+    }
+
+    #[test]
+    fn a_minimal_agent_config_is_enough() {
+        let config = parse(
+            r#"
+            config_version = 1
+            environment = "mizuno-lab"
+
+            [agent]
+            controller_address = "controller.example:7443"
+            "#,
+        )
+        .expect("parse");
+        assert_eq!(config.environment, "mizuno-lab");
+        assert_eq!(
+            config.agent.controller_address.as_deref(),
+            Some("controller.example:7443")
+        );
+        assert_eq!(config.peer_monitoring.degree, 3, "defaults fill in");
+    }
+
+    #[test]
+    fn a_future_config_version_is_refused_rather_than_half_read() {
+        let error = parse("config_version = 9999").expect_err("must refuse");
+        assert!(
+            matches!(error, ConfigError::UnsupportedVersion { found: 9999, .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_config_version_is_refused() {
+        let error = parse("environment = \"x\"").expect_err("must refuse");
+        assert!(matches!(error, ConfigError::MissingVersion));
+    }
+
+    #[test]
+    fn unknown_keys_are_refused_so_typos_do_not_silently_disable_monitoring() {
+        let error = parse(
+            r#"
+            config_version = 1
+            [peer_monitoring]
+            degre = 5
+            "#,
+        )
+        .expect_err("must refuse");
+        assert!(matches!(error, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn entities_and_dependencies_parse_without_naming_a_technology() {
+        let config = parse(
+            r#"
+            config_version = 1
+            environment = "lab"
+
+            [[entities]]
+            type = "host"
+            name = "fileserver-a"
+            labels = { rack = "r01" }
+            capabilities = ["storage.nfs.server"]
+
+            [[entities]]
+            type = "storage"
+            name = "shared-a"
+
+            [[dependencies]]
+            from = "host/compute-a"
+            to = "storage/shared-a"
+            type = "uses_storage"
+            "#,
+        )
+        .expect("parse");
+        assert_eq!(config.entities.len(), 2);
+        assert_eq!(config.entities[0].capabilities, ["storage.nfs.server"]);
+        assert_eq!(config.dependencies[0].dependency_type, "uses_storage");
+        assert_eq!(config.dependencies[0].criticality, "critical", "default applies");
+    }
+
+    #[test]
+    fn capability_overrides_parse() {
+        let config = parse(
+            r#"
+            config_version = 1
+
+            [capabilities]
+            "storage.nfs.server" = "force"
+            "storage.smart" = "disable"
+            "#,
+        )
+        .expect("parse");
+        assert_eq!(
+            config.capabilities.get("storage.nfs.server"),
+            Some(&CapabilityOverride::Force)
+        );
+        assert_eq!(
+            config.capabilities.get("storage.smart"),
+            Some(&CapabilityOverride::Disable)
+        );
+    }
+
+    #[test]
+    fn durations_are_written_the_way_operators_write_them() {
+        let config = parse(
+            r#"
+            config_version = 1
+            [controller]
+            inventory_interval = "10m"
+            "#,
+        )
+        .expect("parse");
+        assert_eq!(config.controller.inventory_interval, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn no_controller_host_is_baked_into_the_defaults() {
+        let config = Config::default();
+        assert_eq!(config.agent.controller_address, None);
+    }
+}

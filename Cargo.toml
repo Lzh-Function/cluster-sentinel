@@ -1,0 +1,40 @@
+[package]
+name = "sentinel"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Cluster Sentinel - generic cluster infrastructure monitoring, failure detection and incident diagnosis"
+license = "MIT"
+publish = false
+
+[lib]
+name = "sentinel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sentinel"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process", "signal", "sync", "io-util"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono", "uuid"] }
+async-trait = "0.1"
+humantime-serde = "1"
+humantime = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
