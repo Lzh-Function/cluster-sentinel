@@ -52,8 +52,14 @@ Docker で再現できない理由: container 内の hang が host を巻き込�
 
 ### 3. 実 systemd
 
+疑似クラスタは cgroup v2 を実階層で使用していますが、
+**scope を作成するのは systemd ではなく slurmd 自身です**
+（`IgnoreSystemd=yes`）。container に systemd も dbus も無いためです。
+production の経路は未検証であり、ここで確認します。
+
 | 項目 | 手順 | 期待される結果 |
 | --- | --- | --- |
+| systemd 管理下の cgroup scope | 通常どおり `slurmd` を起動 | dbus 経由で scope が作成され、cgroup エラーが出ない |
 | unit 状態の取得 | `systemctl stop slurmd` | `systemd.unit` probe が `ActiveState=inactive` を報告 |
 | failed unit | unit を意図的に失敗させる | `Result=exit-code` を検出 |
 | hardening 下での動作 | 生成された unit で起動 | `ProtectSystem=strict` 下で全 probe が動作する |
@@ -114,5 +120,5 @@ Docker / VM で代替できるものはそちらで行ってください。
 | --- | --- | --- |
 | 1 | unit / mock | 自動化済み・CI 実行可能 |
 | 2 | in-process simulation | 自動化済み・CI 実行可能 |
-| 3 | Docker 疑似クラスタ | 自動化済み（`dev/compose/scripts/acceptance`、23 項目） |
+| 3 | Docker 疑似クラスタ | 自動化済み（`dev/compose/scripts/acceptance`、23 項目）。cgroup は v2 実階層だが scope 作成は systemd 経由ではない |
 | 4 | VM / 実機 | **未実施**。本書が要件一覧 |

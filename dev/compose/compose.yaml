@@ -25,11 +25,6 @@ x-common: &common
     # to tell apart from a dead host.
     - NET_ADMIN
   init: true
-  tmpfs:
-    # The host's /sys/fs/cgroup is read-only cgroup2, which slurmd cannot use
-    # without systemd and dbus. A writable tmpfs in its place lets the cgroup/v1
-    # plugin create the directories it wants. See config/slurm/cgroup.conf.
-    - /sys/fs/cgroup:rw,mode=755
   networks:
     - cluster
 
@@ -38,6 +33,17 @@ services:
     <<: *common
     container_name: sentinel-controller
     hostname: controller
+    # Docker mounts /sys/fs/cgroup read-only unless the container is
+    # privileged, and Slurm's cgroup/v2 plugin has to create a scope directory
+    # under it -- work systemd would normally do, and which no capability short
+    # of privileged permits.
+    #
+    # Confined to the containers that actually run a Slurm daemon, and to this
+    # throwaway local testbed. Production runs under systemd on a native host
+    # with none of this; the generated systemd units are hardened in the
+    # opposite direction (see `sentinel install`).
+    privileged: true
+    cgroup: private
     environment:
       <<: *common-env
       SENTINEL_ROLE: controller
@@ -45,7 +51,7 @@ services:
       - ./config/slurm/slurm.conf:/etc/slurm/slurm.conf:ro
       - ./config/slurm/cgroup.conf:/etc/slurm/cgroup.conf:ro
       - ./config/sentinel/controller.toml:/etc/sentinel/config.toml:ro
-      - munge-key:/etc/munge
+      - munge-key:/etc/munge-shared:ro
       - controller-state:/var/lib/sentinel
     ports:
       # Exposed so tests and `sentinel status` can reach the API from the host.
@@ -64,6 +70,10 @@ services:
     <<: *common
     container_name: sentinel-compute01
     hostname: compute01
+    # See the note on the controller: needed only to create the cgroup scope
+    # that systemd would create in production.
+    privileged: true
+    cgroup: private
     environment:
       <<: *common-env
       SENTINEL_ROLE: compute
@@ -71,7 +81,7 @@ services:
       - ./config/slurm/slurm.conf:/etc/slurm/slurm.conf:ro
       - ./config/slurm/cgroup.conf:/etc/slurm/cgroup.conf:ro
       - ./config/sentinel/agent.toml:/etc/sentinel/config.toml:ro
-      - munge-key:/etc/munge
+      - munge-key:/etc/munge-shared:ro
     depends_on:
       controller:
         condition: service_healthy
@@ -101,7 +111,7 @@ services:
       SENTINEL_ROLE: fileserver
     volumes:
       - ./config/sentinel/agent.toml:/etc/sentinel/config.toml:ro
-      - munge-key:/etc/munge
+      - munge-key:/etc/munge-shared:ro
     depends_on:
       controller:
         condition: service_healthy
@@ -127,14 +137,17 @@ services:
     command:
       - |
         set -euo pipefail
-        if [[ ! -s /etc/munge/munge.key ]]; then
-          dd if=/dev/urandom bs=1 count=1024 of=/etc/munge/munge.key status=none
+        if [[ ! -s /etc/munge-shared/munge.key ]]; then
+          dd if=/dev/urandom bs=1 count=1024 of=/etc/munge-shared/munge.key status=none
         fi
-        chown munge:munge /etc/munge/munge.key
-        chmod 0400 /etc/munge/munge.key
+        chown munge:munge /etc/munge-shared/munge.key
+        chmod 0400 /etc/munge-shared/munge.key
         echo "munge key ready"
     volumes:
-      - munge-key:/etc/munge
+      # The one service that may write the key. Everyone else mounts it
+      # read-only, which is what makes the startup race impossible rather than
+      # merely unlikely.
+      - munge-key:/etc/munge-shared
     restart: "no"
     healthcheck:
       disable: true

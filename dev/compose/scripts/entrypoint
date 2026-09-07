@@ -19,14 +19,16 @@ fi
 log() { echo "entrypoint[$(hostname)]: $*"; }
 
 # --- munge -----------------------------------------------------------------
-# Every container shares one key. munged refuses to start unless the key is
-# 0400 and owned by the munge user, and a bind-mounted file arrives with
-# neither, so fix it here rather than in the image.
-if [[ -f /etc/munge/munge.key ]]; then
-    cp /etc/munge/munge.key /tmp/munge.key
-    install -o munge -g munge -m 0400 /tmp/munge.key /etc/munge/munge.key.local
-    mv /etc/munge/munge.key.local /etc/munge/munge.key
-    rm -f /tmp/munge.key
+# Every container needs the same key, and munged refuses to start unless it is
+# 0400 owned by the munge user.
+#
+# The shared key is mounted read-only at /etc/munge-shared and copied into the
+# container's own /etc/munge, which is NOT a volume. Adjusting permissions
+# directly in the shared volume would have every container writing the same
+# path at once: they race, one wins, and the losers exit with "File exists" --
+# an intermittent startup failure that looks like anything but its cause.
+if [[ -f /etc/munge-shared/munge.key ]]; then
+    install -o munge -g munge -m 0400 /etc/munge-shared/munge.key /etc/munge/munge.key
     chown -R munge:munge /run/munge /var/lib/munge /var/log/munge 2>/dev/null || true
 fi
 
@@ -34,13 +36,11 @@ fi
 mkdir -p /var/spool/slurmctld /var/spool/slurmd /var/log/slurm
 chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm 2>/dev/null || true
 
-# Slurm's cgroup/v1 plugin only needs these directories to exist and be
-# writable. They sit on a tmpfs mounted by compose over /sys/fs/cgroup; see
-# config/slurm/cgroup.conf for why this is the shape that works in a container.
+# Slurm's cgroup/v2 plugin creates a scope directory under the parent slice,
+# a job systemd would normally do. The slice itself has to exist first.
+# See config/slurm/cgroup.conf for the whole story.
 if [[ -w /sys/fs/cgroup ]]; then
-    for controller in systemd freezer cpuset memory cpuacct devices blkio net_cls perf_event pids; do
-        mkdir -p "/sys/fs/cgroup/${controller}"
-    done
+    mkdir -p /sys/fs/cgroup/system.slice
 fi
 
 # --- storage role ----------------------------------------------------------

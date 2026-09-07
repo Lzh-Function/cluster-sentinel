@@ -113,6 +113,7 @@ Docker で再現できないものを、再現できたことにしてはいけ�
 
 | 再現しないもの | 理由 | 委譲先 |
 | --- | --- | --- |
+| **systemd による cgroup scope 管理** | container に systemd / dbus が無い。`IgnoreSystemd=yes` で slurmd 自身に scope を作らせている | VM (level 4) |
 | 実機 reboot / boot ID 変化 | container に boot semantics が無い | VM (level 4) |
 | kernel hard lock、真の D-state | container は kernel を共有する | VM |
 | NFS hard mount による kernel stall | container 内の hang が host を巻き込み得る | VM |
@@ -125,6 +126,33 @@ Docker で再現できないものを、再現できたことにしてはいけ�
 service / network の意味論の再現を優先し、
 kernel レベルの NFS 挙動は VM へ委譲しています。
 `degrade-storage hang` はユーザー空間での停止であり、D-state ではありません。
+
+## production との差異
+
+testbed は production を模したものであって、production ではありません。
+**再現できていない点を明示します。**
+
+| 項目 | production | この testbed |
+| --- | --- | --- |
+| cgroup 版 | v2 | **v2（一致）** |
+| cgroup 階層 | 実 cgroup2 | **実 cgroup2（一致）** |
+| scope の作成者 | systemd（dbus 経由） | **slurmd 自身**（`IgnoreSystemd=yes`）|
+| init | systemd | supervisord |
+| container 権限 | 該当なし（native host） | **`privileged`**（slurmd を動かす container のみ）|
+| storage | 実 NFS | userspace の代替サービス |
+
+`privileged` が必要な理由は 1 点だけです。
+Docker は非特権 container の `/sys/fs/cgroup` を read-only で mount するため、
+Slurm の cgroup/v2 plugin が scope ディレクトリを作成できません。
+production では systemd が行う作業であり、
+これを許可する capability は `privileged` 以外に存在しません。
+
+適用範囲は Slurm daemon を動かす container（controller / compute）に限定し、
+fileserver には付けていません。
+production の systemd unit は逆方向に hardening してあります（`sentinel install`）。
+
+**以前は cgroup v1 を使用していました。** production は v2 であり、
+かつ tmpfs 上の偽の階層だったため、v2 + 実階層へ変更しました。
 
 ## 実装上の判断
 
