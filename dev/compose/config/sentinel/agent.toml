@@ -1,0 +1,14 @@
+# Sentinel agent configuration for every non-controller container.
+#
+# Deliberately minimal (SPEC.md §130): the agent discovers its own
+# capabilities, and `roles` is a grouping label that never enables a probe.
+
+config_version = 1
+environment = "testbed"
+
+[agent]
+controller_address = "controller:7443"
+spool_path = "/var/lib/sentinel/spool.db"
+
+[database]
+path = "/var/lib/sentinel/agent.db"

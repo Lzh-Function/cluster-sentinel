@@ -5,6 +5,23 @@
 
 ## 未リリース
 
+### M3 — Docker Compose 疑似クラスタ
+
+* 6 container（controller 1 / compute 3 / fileserver 2）の疑似クラスタ。
+  **実 munge / slurmctld / slurmd** が動作する。
+* 障害注入シナリオ 11 種:
+  `stop-agent` / `stop-slurmd` / `stop-ssh` / `drain-node` / `stop-fileserver` /
+  `degrade-storage` / `pause-host` / `stop-host` / `stop-controller` /
+  `isolate` / `recover-all`。すべて冪等で復旧可能。
+* `wait-healthy` は container の起動だけでなく、controller API・Slurm の node 登録・
+  storage service・agent 登録がすべて揃うまで待つ。
+* Docker integration test 11 件（`SENTINEL_DOCKER_TESTS=1` で opt-in）。
+  Docker 非対応環境でも unit / simulation テストは通る。
+* Slurm role の判定を設定ベースへ変更（ADR 0003）。
+  バイナリの存在では compute node が control plane を主張してしまう。
+* capability の取り下げを provider 単位で反映（`reconcile_capabilities`）。
+* `docs/SECURITY.md`、`dev/compose/README.md` を追加。
+
 ### M2 — Agent + Protocol
 
 * Wire protocol v1（versioned JSON over HTTP）。binary version と protocol version を分離。

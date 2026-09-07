@@ -9,6 +9,7 @@
 //! (SPEC.md §64): a single portable binary that works across Slurm versions is
 //! worth more here than the efficiency of the C API.
 
+pub mod detect;
 pub mod hostlist;
 pub mod observe;
 pub mod parser;

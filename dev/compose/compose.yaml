@@ -1,0 +1,148 @@
+# The Sentinel pseudo-cluster.
+#
+# Six containers standing in for a controller, three compute nodes and two
+# fileservers. This is a first-class development artefact, not a demo: the
+# scenario scripts break it on purpose, and the integration tests assert what
+# Sentinel concludes when they do (IMPLEMENTATION.md §6).
+#
+# It is NOT a production deployment mechanism. Production is systemd on a real
+# host, and nothing container-specific may leak into Sentinel itself
+# (IMPLEMENTATION.md §12, §13).
+
+name: sentinel-testbed
+
+x-common: &common
+  build:
+    context: ../..
+    dockerfile: dev/compose/images/Dockerfile
+  image: sentinel-testbed:latest
+  environment: &common-env
+    SENTINEL_TOKEN: "testbed-credential-0123456789abcdef"
+  cap_add:
+    # The network-partition scenarios add iptables rules inside a container to
+    # cut one path while leaving the others intact. That is the only way to
+    # reproduce a path-specific failure, which is the fault Sentinel most needs
+    # to tell apart from a dead host.
+    - NET_ADMIN
+  init: true
+  tmpfs:
+    # The host's /sys/fs/cgroup is read-only cgroup2, which slurmd cannot use
+    # without systemd and dbus. A writable tmpfs in its place lets the cgroup/v1
+    # plugin create the directories it wants. See config/slurm/cgroup.conf.
+    - /sys/fs/cgroup:rw,mode=755
+  networks:
+    - cluster
+
+services:
+  controller:
+    <<: *common
+    container_name: sentinel-controller
+    hostname: controller
+    environment:
+      <<: *common-env
+      SENTINEL_ROLE: controller
+    volumes:
+      - ./config/slurm/slurm.conf:/etc/slurm/slurm.conf:ro
+      - ./config/slurm/cgroup.conf:/etc/slurm/cgroup.conf:ro
+      - ./config/sentinel/controller.toml:/etc/sentinel/config.toml:ro
+      - munge-key:/etc/munge
+      - controller-state:/var/lib/sentinel
+    ports:
+      # Exposed so tests and `sentinel status` can reach the API from the host.
+      - "17443:7443"
+    depends_on:
+      munge-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7443/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  compute01: &compute
+    <<: *common
+    container_name: sentinel-compute01
+    hostname: compute01
+    environment:
+      <<: *common-env
+      SENTINEL_ROLE: compute
+    volumes:
+      - ./config/slurm/slurm.conf:/etc/slurm/slurm.conf:ro
+      - ./config/slurm/cgroup.conf:/etc/slurm/cgroup.conf:ro
+      - ./config/sentinel/agent.toml:/etc/sentinel/config.toml:ro
+      - munge-key:/etc/munge
+    depends_on:
+      controller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "supervisorctl -c /etc/supervisor/roles/compute.conf status slurmd | grep -q RUNNING"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  compute02:
+    <<: *compute
+    container_name: sentinel-compute02
+    hostname: compute02
+
+  compute03:
+    <<: *compute
+    container_name: sentinel-compute03
+    hostname: compute03
+
+  filesrv01: &fileserver
+    <<: *common
+    container_name: sentinel-filesrv01
+    hostname: filesrv01
+    environment:
+      <<: *common-env
+      SENTINEL_ROLE: fileserver
+    volumes:
+      - ./config/sentinel/agent.toml:/etc/sentinel/config.toml:ro
+      - munge-key:/etc/munge
+    depends_on:
+      controller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:2050/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  filesrv02:
+    <<: *fileserver
+    container_name: sentinel-filesrv02
+    hostname: filesrv02
+
+  # Generates the shared munge key once, before anything that needs it starts.
+  # Slurm authentication fails in confusing ways if the containers disagree
+  # about the key, so it is created in one place and shared by volume.
+  munge-init:
+    <<: *common
+    container_name: sentinel-munge-init
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        if [[ ! -s /etc/munge/munge.key ]]; then
+          dd if=/dev/urandom bs=1 count=1024 of=/etc/munge/munge.key status=none
+        fi
+        chown munge:munge /etc/munge/munge.key
+        chmod 0400 /etc/munge/munge.key
+        echo "munge key ready"
+    volumes:
+      - munge-key:/etc/munge
+    restart: "no"
+    healthcheck:
+      disable: true
+
+networks:
+  cluster:
+    name: sentinel-testbed
+
+volumes:
+  munge-key:
+  controller-state:

@@ -68,9 +68,6 @@ pub fn detect(inspector: &dyn SystemInspector) -> BTreeMap<Capability, Discovery
         inspector.path_exists(Path::new("/etc/ssh/sshd_config")) || inspector.which("sshd").is_some(),
     );
 
-    record(well_known::SLURM_COMPUTE, inspector.which("slurmd").is_some());
-    record(well_known::SLURM_CONTROLLER, inspector.which("slurmctld").is_some());
-
     record(well_known::GPU_NVIDIA, inspector.which("nvidia-smi").is_some());
 
     let mounts = inspector.mounts();
@@ -82,6 +79,15 @@ pub fn detect(inspector: &dyn SystemInspector) -> BTreeMap<Capability, Discovery
     record(well_known::STORAGE_ZFS, inspector.which("zpool").is_some());
     record(well_known::STORAGE_SMART, inspector.which("smartctl").is_some());
     record(well_known::STORAGE_LOCAL, true);
+
+    // Slurm decides its own capabilities: "the binary is installed" is not the
+    // same as "this host is configured to run it", and only the integration
+    // knows how to tell the difference.
+    found.extend(crate::integrations::slurm::detect::detect(
+        &inspector.hostname().unwrap_or_default(),
+        |path| inspector.read_file(path),
+        |program| inspector.which(program).is_some(),
+    ));
 
     found
 }

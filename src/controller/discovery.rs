@@ -72,6 +72,7 @@ impl Controller {
         let mut inventory = self.store().load_inventory(&environment).await?;
         let mut report = DiscoveryReport::default();
         let mut observations: Vec<Observation> = Vec::new();
+        let mut snapshots: Vec<crate::inventory::InventorySnapshot> = Vec::new();
 
         let providers = self.providers.clone();
         for provider in providers {
@@ -87,6 +88,7 @@ impl Controller {
                     if let Some(source) = &snapshot.source {
                         inventory.mark_absent_as_stale(source, &snapshot);
                     }
+                    snapshots.push(snapshot);
                 }
                 Err(error) => {
                     // Record the failure and move on. Marking this provider's
@@ -117,6 +119,9 @@ impl Controller {
         report.entities = inventory.len();
         report.dependencies = inventory.graph().len();
         self.store().save_inventory(&inventory).await?;
+        for snapshot in &snapshots {
+            self.reconcile_snapshot_capabilities(snapshot).await?;
+        }
 
         // Observations must be stored before the state they justify, so that a
         // crash between the two leaves evidence without conclusions rather than
@@ -160,7 +165,28 @@ impl Controller {
         let mut inventory = self.store().load_inventory(&environment).await?;
         inventory.merge(snapshot);
         self.store().save_inventory(&inventory).await?;
+        self.reconcile_snapshot_capabilities(snapshot).await?;
         Ok(inventory)
+    }
+
+    /// Let a snapshot retract capability claims it no longer makes.
+    ///
+    /// The in-memory merge unions capabilities, which is right across
+    /// providers but wrong within one: if this provider has stopped reporting a
+    /// capability it used to report, the claim must not outlive it.
+    async fn reconcile_snapshot_capabilities(
+        &self,
+        snapshot: &crate::inventory::InventorySnapshot,
+    ) -> Result<(), StoreError> {
+        let Some(source) = &snapshot.source else {
+            return Ok(());
+        };
+        for entity in &snapshot.entities {
+            self.store()
+                .reconcile_capabilities(entity.id, source, &entity.capabilities)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Record observations and update state from them.

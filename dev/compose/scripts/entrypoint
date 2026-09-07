@@ -1,0 +1,57 @@
+#!/bin/bash
+# Bring one container up in the role named by $SENTINEL_ROLE.
+#
+# There is no systemd in a container, so supervisord stands in. That is not a
+# cosmetic choice: the failure-injection scenarios need to stop `slurmd` alone,
+# or the agent alone, and leave everything else running. A shell script that
+# backgrounds three processes cannot do that.
+set -euo pipefail
+
+ROLE="${SENTINEL_ROLE:?SENTINEL_ROLE must be set}"
+ROLE_CONFIG="/etc/supervisor/roles/${ROLE}.conf"
+
+if [[ ! -f "${ROLE_CONFIG}" ]]; then
+    echo "entrypoint: no such role: ${ROLE}" >&2
+    echo "entrypoint: available roles: $(ls /etc/supervisor/roles/ | sed 's/\.conf//' | tr '\n' ' ')" >&2
+    exit 64
+fi
+
+log() { echo "entrypoint[$(hostname)]: $*"; }
+
+# --- munge -----------------------------------------------------------------
+# Every container shares one key. munged refuses to start unless the key is
+# 0400 and owned by the munge user, and a bind-mounted file arrives with
+# neither, so fix it here rather than in the image.
+if [[ -f /etc/munge/munge.key ]]; then
+    cp /etc/munge/munge.key /tmp/munge.key
+    install -o munge -g munge -m 0400 /tmp/munge.key /etc/munge/munge.key.local
+    mv /etc/munge/munge.key.local /etc/munge/munge.key
+    rm -f /tmp/munge.key
+    chown -R munge:munge /run/munge /var/lib/munge /var/log/munge 2>/dev/null || true
+fi
+
+# --- slurm -----------------------------------------------------------------
+mkdir -p /var/spool/slurmctld /var/spool/slurmd /var/log/slurm
+chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm 2>/dev/null || true
+
+# Slurm's cgroup/v1 plugin only needs these directories to exist and be
+# writable. They sit on a tmpfs mounted by compose over /sys/fs/cgroup; see
+# config/slurm/cgroup.conf for why this is the shape that works in a container.
+if [[ -w /sys/fs/cgroup ]]; then
+    for controller in systemd freezer cpuset memory cpuacct devices blkio net_cls perf_event pids; do
+        mkdir -p "/sys/fs/cgroup/${controller}"
+    done
+fi
+
+# --- sentinel --------------------------------------------------------------
+mkdir -p /var/lib/sentinel /run/sentinel
+
+# The credential reaches the process through a file rather than a command
+# line, so it never appears in the process table (docs/SECURITY.md).
+if [[ -n "${SENTINEL_TOKEN:-}" && ! -f /etc/sentinel/token ]]; then
+    umask 077
+    printf '%s' "${SENTINEL_TOKEN}" > /etc/sentinel/token
+fi
+
+log "starting role ${ROLE}"
+exec /usr/bin/supervisord -n -c "${ROLE_CONFIG}"

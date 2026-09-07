@@ -43,6 +43,64 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Bring one provider's capability claims for an entity up to date.
+    ///
+    /// Capabilities are unioned across providers, because each knows different
+    /// things about a host. But a provider that *stops* claiming a capability
+    /// it used to claim has said something, and without this the claim would
+    /// live forever: a node whose GPUs were removed would keep `gpu.nvidia`,
+    /// and GPU probes would keep failing against hardware that is not there.
+    ///
+    /// Only rows attributed to `source` are removed, so one provider going
+    /// quiet cannot delete another's findings.
+    pub async fn reconcile_capabilities(
+        &self,
+        entity: EntityId,
+        source: &DiscoverySource,
+        capabilities: &CapabilitySet,
+    ) -> Result<u64, StoreError> {
+        let id = entity.to_string();
+        let source = source.as_str();
+        let timestamp = to_rfc3339(now());
+        let mut tx = self.pool().begin().await?;
+
+        let kept: Vec<String> = capabilities.iter().map(|c| c.as_str().to_string()).collect();
+        let placeholders = if kept.is_empty() {
+            String::new()
+        } else {
+            format!(" AND capability NOT IN ({})", vec!["?"; kept.len()].join(", "))
+        };
+
+        let delete_sql =
+            format!("DELETE FROM entity_capabilities WHERE entity_id = ? AND discovery_source = ?{placeholders}");
+        let mut delete = sqlx::query(&delete_sql).bind(&id).bind(&source);
+        for capability in &kept {
+            delete = delete.bind(capability);
+        }
+        let removed = delete.execute(&mut *tx).await?.rows_affected();
+
+        for capability in capabilities.iter() {
+            sqlx::query(
+                "INSERT INTO entity_capabilities (entity_id, capability, resolution_reason, discovery_source,
+                                                  first_seen_at, last_seen_at)
+                 VALUES (?, ?, 'discovered', ?, ?, ?)
+                 ON CONFLICT(entity_id, capability) DO UPDATE SET
+                     discovery_source = excluded.discovery_source,
+                     last_seen_at = excluded.last_seen_at",
+            )
+            .bind(&id)
+            .bind(capability.as_str())
+            .bind(&source)
+            .bind(&timestamp)
+            .bind(&timestamp)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(removed)
+    }
+
     /// Load every entity and dependency edge in an environment.
     pub async fn load_inventory(&self, environment: &str) -> Result<Inventory, StoreError> {
         let mut inventory = Inventory::new();
@@ -400,6 +458,96 @@ mod tests {
             loaded.capabilities.has("gpu.nvidia"),
             "a provider being briefly silent is not proof the GPUs left"
         );
+    }
+
+    #[tokio::test]
+    async fn a_capability_a_provider_stops_claiming_is_retracted() {
+        // A node whose GPUs were removed must stop claiming gpu.nvidia, or GPU
+        // probes keep failing against hardware that is not there.
+        let store = store().await;
+        let entity = host("node-a").with_discovery_source(DiscoverySource::AgentRegistration);
+        store.save_entity(&entity).await.expect("save");
+
+        let agent = DiscoverySource::AgentRegistration;
+        store
+            .reconcile_capabilities(
+                entity.id,
+                &agent,
+                &CapabilitySet::from_iter(["host.metrics", "gpu.nvidia"]),
+            )
+            .await
+            .expect("first");
+        assert!(store.load_entities("lab").await.expect("load")[0]
+            .capabilities
+            .has("gpu.nvidia"));
+
+        let removed = store
+            .reconcile_capabilities(entity.id, &agent, &CapabilitySet::from_iter(["host.metrics"]))
+            .await
+            .expect("second");
+
+        assert_eq!(removed, 1);
+        let loaded = &store.load_entities("lab").await.expect("load")[0];
+        assert!(
+            !loaded.capabilities.has("gpu.nvidia"),
+            "the retracted claim must be gone"
+        );
+        assert!(loaded.capabilities.has("host.metrics"), "the others stand");
+    }
+
+    #[tokio::test]
+    async fn one_provider_going_quiet_does_not_delete_anothers_findings() {
+        let store = store().await;
+        let entity = host("node-a");
+        store.save_entity(&entity).await.expect("save");
+
+        let slurm = DiscoverySource::Integration("slurm".into());
+        store
+            .reconcile_capabilities(entity.id, &slurm, &CapabilitySet::from_iter(["slurm.compute"]))
+            .await
+            .expect("slurm");
+        store
+            .reconcile_capabilities(
+                entity.id,
+                &DiscoverySource::AgentRegistration,
+                &CapabilitySet::from_iter(["gpu.nvidia"]),
+            )
+            .await
+            .expect("agent");
+
+        // The agent reports again with nothing; Slurm's claim must survive.
+        store
+            .reconcile_capabilities(entity.id, &DiscoverySource::AgentRegistration, &CapabilitySet::new())
+            .await
+            .expect("agent again");
+
+        let loaded = &store.load_entities("lab").await.expect("load")[0];
+        assert!(loaded.capabilities.has("slurm.compute"), "Slurm never retracted this");
+        assert!(!loaded.capabilities.has("gpu.nvidia"));
+    }
+
+    #[tokio::test]
+    async fn reconciling_an_empty_set_from_an_unknown_source_removes_nothing() {
+        let store = store().await;
+        let entity = host("node-a");
+        store.save_entity(&entity).await.expect("save");
+        store
+            .reconcile_capabilities(
+                entity.id,
+                &DiscoverySource::Integration("slurm".into()),
+                &CapabilitySet::from_iter(["slurm.compute"]),
+            )
+            .await
+            .expect("slurm");
+
+        let removed = store
+            .reconcile_capabilities(entity.id, &DiscoverySource::StaticConfig, &CapabilitySet::new())
+            .await
+            .expect("static");
+        assert_eq!(removed, 0);
+        assert!(store.load_entities("lab").await.expect("load")[0]
+            .capabilities
+            .has("slurm.compute"));
     }
 
     #[tokio::test]

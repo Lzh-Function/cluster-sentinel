@@ -42,9 +42,41 @@ cargo test --all
 
 Level 1 と 2 は、Rust toolchain さえあれば Docker 無しで必ず通ります。
 
+## 疑似クラスタ
+
+Docker Compose による 6 container の疑似クラスタが `dev/compose/` にあります。
+controller 1、compute 3、fileserver 2 という構成です。
+
+```bash
+cd dev/compose
+./scripts/up
+```
+
+`up` は container の起動だけでなく、controller API の応答・Slurm の node 登録・
+storage service・agent 登録がすべて揃うまで待ってから戻ります。
+
+```bash
+./scripts/sentinel status          # クラスタ状態
+./scenarios/stop-slurmd compute01  # 障害注入
+./scripts/sentinel status          # 診断結果を確認
+./scenarios/recover-all            # 復旧
+./scripts/down                     # 停止
+./scripts/reset                    # volume ごと作り直し
+```
+
+利用可能なシナリオ一覧と依存関係トポロジは
+[`dev/compose/README.md`](../dev/compose/README.md) を参照してください。
+
+Docker 統合テストは無印では実行されません（Docker が無い環境でも
+unit / simulation テストが通るようにするため）。実行するには:
+
+```bash
+SENTINEL_DOCKER_TESTS=1 cargo test --test m3_pseudo_cluster -- --test-threads=1
+```
+
 ## Docker で保証できないもの
 
-疑似クラスタ（M3 以降）は service / process / network 障害を忠実に再現しますが、
+疑似クラスタは service / process / network 障害を忠実に再現しますが、
 以下は再現 **しません**。
 
 * 実機 reboot の semantics と boot ID の変化

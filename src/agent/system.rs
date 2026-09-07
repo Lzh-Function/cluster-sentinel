@@ -74,6 +74,11 @@ pub trait SystemInspector: Send + Sync {
     fn path_exists(&self, path: &Path) -> bool;
     /// Locate an executable on `PATH`.
     fn which(&self, program: &str) -> Option<PathBuf>;
+    /// Read a configuration file, if it is readable.
+    ///
+    /// For configuration only. Reading a file on a network filesystem could
+    /// block indefinitely, so callers must stay on local paths (SPEC.md §75).
+    fn read_file(&self, path: &Path) -> Option<String>;
     /// Currently mounted filesystems.
     fn mounts(&self) -> Vec<MountInfo>;
     /// Hardware summary.
@@ -136,6 +141,10 @@ impl SystemInspector for LinuxInspector {
         std::env::split_paths(&path)
             .map(|dir| dir.join(program))
             .find(|candidate| candidate.is_file())
+    }
+
+    fn read_file(&self, path: &Path) -> Option<String> {
+        std::fs::read_to_string(path).ok()
     }
 
     fn mounts(&self) -> Vec<MountInfo> {
@@ -232,6 +241,8 @@ pub struct FakeInspector {
     pub programs: BTreeMap<String, PathBuf>,
     /// Mounted filesystems.
     pub mounts: Vec<MountInfo>,
+    /// Readable files, by path.
+    pub files: BTreeMap<String, String>,
     /// Hardware summary.
     pub hardware: HardwareSummary,
 }
@@ -263,6 +274,13 @@ impl FakeInspector {
     /// Builder: pretend a path exists.
     pub fn with_path(mut self, path: &str) -> Self {
         self.paths.insert(path.to_string(), true);
+        self
+    }
+
+    /// Builder: make a file readable with the given contents.
+    pub fn with_file(mut self, path: &str, contents: &str) -> Self {
+        self.paths.insert(path.to_string(), true);
+        self.files.insert(path.to_string(), contents.to_string());
         self
     }
 
@@ -313,6 +331,10 @@ impl SystemInspector for FakeInspector {
 
     fn which(&self, program: &str) -> Option<PathBuf> {
         self.programs.get(program).cloned()
+    }
+
+    fn read_file(&self, path: &Path) -> Option<String> {
+        self.files.get(&path.display().to_string()).cloned()
     }
 
     fn mounts(&self) -> Vec<MountInfo> {
@@ -439,5 +461,16 @@ fileserver:/export/home /home nfs4 rw,relatime,vers=4.2 0 0
         assert!(inspector.path_exists(Path::new("/etc/exports")));
         assert!(!inspector.path_exists(Path::new("/etc/elsewhere")));
         assert_eq!(inspector.mounts().len(), 1);
+    }
+
+    #[test]
+    fn a_faked_file_is_readable_and_counts_as_existing() {
+        let inspector = FakeInspector::bare().with_file("/etc/slurm/slurm.conf", "SlurmctldHost=ctl-a\n");
+        assert_eq!(
+            inspector.read_file(Path::new("/etc/slurm/slurm.conf")).as_deref(),
+            Some("SlurmctldHost=ctl-a\n")
+        );
+        assert!(inspector.path_exists(Path::new("/etc/slurm/slurm.conf")));
+        assert_eq!(inspector.read_file(Path::new("/etc/nothing")), None);
     }
 }
