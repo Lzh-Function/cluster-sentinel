@@ -167,6 +167,13 @@ pub fn register_builtin_probes(engine: &mut StateEngine) {
         }),
     );
 
+    // Storage probes all inform the storage component. The active filesystem
+    // probe is deliberately debounced no harder than the others: a mount that
+    // is slow twice running is genuinely slow.
+    for probe in crate::diagnosis::rules::storage::storage_probe_ids() {
+        engine.register(probe, ProbeMapping::new(StateComponent::Storage));
+    }
+
     // A reboot is a recorded fact about the host, and it is not a fault.
     engine.register(
         crate::controller::registration::PROBE_BOOT,
@@ -260,6 +267,10 @@ mod tests {
             crate::probes::systemd::PROBE_ID,
             crate::probes::host::PROBE_ID,
             crate::controller::registration::PROBE_BOOT,
+            crate::probes::nfs::PROBE_CLIENT_MOUNT,
+            crate::probes::nfs::PROBE_CLIENT_IO,
+            crate::probes::nfs::PROBE_SERVER_PORT,
+            crate::probes::nfs::PROBE_SERVER_EXPORTS,
         ] {
             assert!(engine.knows(&ProbeId::new(probe)), "{probe} has no state mapping");
         }

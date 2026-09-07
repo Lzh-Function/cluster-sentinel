@@ -35,6 +35,31 @@ use crate::protocol::{HeartbeatRequest, ObservationBatch, RegisterRequest};
 use crate::time::now;
 use crate::PROTOCOL_VERSION;
 
+/// Schedule one active filesystem probe per NFS mount.
+///
+/// Per mount rather than per host, so each gets its own concurrency slot: one
+/// wedged filesystem must not stop the others being checked, and it must not
+/// accumulate a blocked thread every interval (SPEC.md §76).
+fn schedule_storage_probes(local: &mut LocalProbes, inspector: &dyn SystemInspector) {
+    use crate::probes::nfs::{NfsClientIoProbe, NfsMountProbe};
+
+    let mounts: Vec<_> = inspector.mounts().into_iter().filter(|m| m.is_nfs()).collect();
+    if mounts.is_empty() {
+        return;
+    }
+
+    // One cheap probe describing every mount, read from /proc.
+    local.add(Arc::new(NfsMountProbe::new()), serde_json::Value::Null);
+
+    // And one active probe per mount.
+    for mount in mounts {
+        local.add(
+            Arc::new(NfsClientIoProbe::new()),
+            serde_json::json!({ "mount_point": mount.target, "source": mount.source }),
+        );
+    }
+}
+
 /// The largest batch the agent sends at once.
 ///
 /// Bounded so that a long outage does not turn into one enormous request that
@@ -99,9 +124,12 @@ impl Agent {
         // controller (see docs/adr/0001).
         let entity = EntityKey::new(&config.environment, EntityType::Host, &hostname).entity_id();
 
+        let mut local_probes = LocalProbes::new(entity, capabilities.clone());
+        schedule_storage_probes(&mut local_probes, inspector.as_ref());
+
         Ok(Self {
             environment: config.environment.clone(),
-            local_probes: LocalProbes::new(entity, capabilities.clone()),
+            local_probes,
             hostname,
             inspector,
             client,
@@ -442,11 +470,19 @@ mod tests {
     #[tokio::test]
     async fn an_agent_reports_the_capabilities_discovery_found() {
         let inspector = FakeInspector::bare()
+            .with_hostname("compute01")
             .with_program("slurmd")
+            .with_file(
+                "/etc/slurm/slurm.conf",
+                "SlurmctldHost=ctl-a\nNodeName=compute01 CPUs=1\n",
+            )
             .with_mount("fs:/export", "/home", "nfs4");
         let agent = agent_with(inspector, "127.0.0.1:1").await;
 
-        assert!(agent.capabilities().has("slurm.compute"));
+        assert!(
+            agent.capabilities().has("slurm.compute"),
+            "configured as a node, and slurmd is installed"
+        );
         assert!(agent.capabilities().has("storage.nfs.client"));
         assert!(!agent.capabilities().has("gpu.nvidia"));
     }

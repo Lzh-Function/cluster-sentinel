@@ -178,6 +178,19 @@ pub struct ControllerConfig {
     /// How often inventory discovery runs.
     #[serde(default = "default_inventory_interval", with = "humantime_serde")]
     pub inventory_interval: Duration,
+    /// Whether the controller itself probes entities remotely.
+    ///
+    /// On by default: the controller is usually a useful vantage point, and in
+    /// a deployment with no peer observers it is the only one. Turning it off
+    /// suits a controller that only aggregates what agents and peers report —
+    /// for instance one sitting behind a firewall that would make its own view
+    /// misleading.
+    #[serde(default = "default_observe")]
+    pub observe: bool,
+}
+
+fn default_observe() -> bool {
+    true
 }
 
 fn default_listen() -> String {
@@ -193,6 +206,7 @@ impl Default for ControllerConfig {
         Self {
             listen: default_listen(),
             inventory_interval: default_inventory_interval(),
+            observe: default_observe(),
         }
     }
 }
@@ -475,6 +489,26 @@ mod tests {
     fn no_controller_host_is_baked_into_the_defaults() {
         let config = Config::default();
         assert_eq!(config.agent.controller_address, None);
+    }
+
+    #[test]
+    fn the_controller_observes_by_default() {
+        // With no peers deployed, the controller is the only vantage point
+        // there is; defaulting to off would mean seeing nothing.
+        assert!(Config::default().controller.observe);
+    }
+
+    #[test]
+    fn observation_can_be_turned_off() {
+        let config = Config::from_toml(
+            "config_version = 1
+[controller]
+observe = false
+",
+            Path::new("test.toml"),
+        )
+        .expect("parse");
+        assert!(!config.controller.observe);
     }
 
     #[test]

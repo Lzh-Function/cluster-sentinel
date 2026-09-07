@@ -4,6 +4,7 @@
 //! be justified from stored observations does not belong here.
 
 pub mod slurm;
+pub mod storage;
 
 use super::DiagnosisRule;
 
@@ -14,5 +15,8 @@ pub fn builtin() -> Vec<Box<dyn DiagnosisRule>> {
         Box::new(slurm::SlurmdServiceFailure),
         Box::new(slurm::SlurmControlPlaneFailure),
         Box::new(slurm::ResourceConfigurationMismatch),
+        Box::new(storage::StorageServiceFailure),
+        Box::new(storage::SharedStorageFailure),
+        Box::new(storage::ClientLocalStorageFailure),
     ]
 }

@@ -111,7 +111,9 @@ impl Controller {
         // agent health from where it stands. One viewpoint is not enough to
         // call a host dead, which is why these observations carry an observer
         // and the diagnosis engine weighs them together (SPEC.md §50).
-        observations.extend(RemoteObserver::new().observe_all(inventory.entities()).await);
+        if self.config().controller.observe {
+            observations.extend(RemoteObserver::new().observe_all(inventory.entities()).await);
+        }
 
         // Slurm contributes observations as well as inventory: what the
         // scheduler believes about each node is itself a fact worth recording.
@@ -264,13 +266,21 @@ mod tests {
             .expect("controller")
     }
 
+    /// A controller that does not probe remotely.
+    ///
+    /// These tests are about inventory merging and state derivation, not about
+    /// observation. Leaving it on would spend a connection timeout per
+    /// unresolvable fixture name and assert nothing extra; observation is
+    /// covered in `controller::observer` and the M4 acceptance tests.
     fn config_with(entities: Vec<EntityConfig>) -> Config {
-        Config {
+        let mut config = Config {
             config_version: 1,
             environment: "lab".into(),
             entities,
             ..Config::default()
-        }
+        };
+        config.controller.observe = false;
+        config
     }
 
     fn view(nodes: &str, ping: &str) -> SlurmView {

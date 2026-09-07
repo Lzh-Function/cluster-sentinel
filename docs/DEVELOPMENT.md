@@ -130,6 +130,24 @@ dev/compose/    Docker 疑似クラスタ（M3 以降）
 | `systemd.unit` | systemd unit の状態 | `systemd` | local |
 | `slurm.node` | scheduler から見た node 状態 | （Slurm discovery） | controller |
 | `slurm.controller` | control plane の到達性 | （Slurm discovery） | controller |
+| `nfs.client.mount` | mount 一覧・read-only 化 | `storage.nfs.client` | local |
+| `nfs.client.io` | mount への実 I/O 応答性 | `storage.nfs.client` | local（**mount ごとに同時 1**） |
+| `nfs.server.port` | export port の応答 | `storage.nfs.server` | local / remote |
+| `nfs.server.exports` | export 一覧 | `storage.nfs.server` | local |
+
+### NFS probe の安全性
+
+hang した NFS mount に触れた process は uninterruptible sleep に入り、
+kill もできず、syscall も cancel できません。
+30 秒ごとに全 mount へ `stat()` する agent は、障害中に
+blocked thread を積み上げて死にます — 監視が最も必要な瞬間にです。
+
+そのため probe を危険度で分けてあります。
+
+* `/proc/self/mounts` を読むだけの probe は、障害中も安全に動作します。
+* 実 I/O を行う probe は **mount ごとに同時 1 本** に制限され、
+  前回が戻ってこない場合、次回は起動せずスキップします。
+  thread は失われますが、失われるのは 1 本だけです。
 
 `sentinel.agent` が remote のみなのは、
 自分自身に「動いているか」を尋ねても Yes 以外を返し得ないためです。

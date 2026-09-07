@@ -97,8 +97,18 @@ fn names_match(a: &str, b: &str) -> bool {
 
 /// Detect this host's Slurm capabilities.
 ///
-/// Falls back to binary presence only when no configuration can be read at all:
-/// a weak signal beats no signal, and the operator can always override.
+/// With no readable `slurm.conf`, this claims **nothing**. That is deliberate:
+/// a host genuinely participating in Slurm has a configuration, because
+/// `slurmd` and `slurmctld` cannot start without one. Absence of the file is
+/// therefore reasonable evidence that this host is not a Slurm node, whereas
+/// presence of the binaries is not evidence that it is — distributions ship the
+/// whole suite in one package, so a fileserver with the client tools installed
+/// would otherwise claim to be a compute node and a control plane at once.
+///
+/// Nothing is lost by the conservative answer. A node the agent cannot classify
+/// is still given `slurm.compute` by the Slurm inventory provider when
+/// `scontrol` reports it, which also covers configless deployments, and an
+/// operator can force the capability explicitly.
 pub fn detect(
     hostname: &str,
     read_config: impl Fn(&Path) -> Option<String>,
@@ -118,7 +128,7 @@ pub fn detect(
                 roles.compute && has_program("slurmd"),
             )
         }
-        None => (has_program("slurmctld"), has_program("slurmd")),
+        None => (false, false),
     };
 
     let outcome = |present: bool| {
@@ -288,12 +298,17 @@ PartitionName=compute Nodes=compute[01-03] Default=YES State=UP
     }
 
     #[test]
-    fn without_a_readable_config_binary_presence_is_used_as_a_last_resort() {
-        // Weak evidence beats none, and an operator can always override.
-        let found = detect("compute01", |_| None, |program| program == "slurmd");
+    fn without_a_readable_config_nothing_is_claimed() {
+        // A fileserver with the Slurm client tools installed must not report
+        // itself as a compute node, let alone as a control plane. Distributions
+        // ship the whole suite in one package, so binary presence says nothing.
+        // Nothing is lost: the Slurm inventory provider still supplies the
+        // capability for nodes scontrol actually reports, which also covers
+        // configless deployments, and an operator can force it explicitly.
+        let found = detect("fileserver-a", |_| None, |_| true);
         assert_eq!(
             found[&Capability::new(well_known::SLURM_COMPUTE)],
-            DiscoveryOutcome::Detected
+            DiscoveryOutcome::NotDetected
         );
         assert_eq!(
             found[&Capability::new(well_known::SLURM_CONTROLLER)],

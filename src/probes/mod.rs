@@ -8,6 +8,7 @@
 
 pub mod host;
 pub mod network;
+pub mod nfs;
 mod runner;
 pub mod sentinel_rpc;
 pub mod ssh;

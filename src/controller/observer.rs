@@ -97,6 +97,7 @@ impl RemoteObserver {
                 Arc::new(crate::probes::network::TcpProbe::reachability()),
                 Arc::new(crate::probes::ssh::SshProbe::new()),
                 Arc::new(crate::probes::sentinel_rpc::SentinelAgentProbe::new()),
+                Arc::new(crate::probes::nfs::NfsPortProbe::new()),
             ],
             observer_entity: None,
         }

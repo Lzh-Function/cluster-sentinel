@@ -261,9 +261,12 @@ mod tests {
     fn write_config(dir: &std::path::Path, extra: &str) -> std::path::PathBuf {
         let path = dir.join("config.toml");
         let mut file = std::fs::File::create(&path).expect("create");
+        // `observe = false`: these tests exercise the CLI plumbing, not remote
+        // probing, and probing unresolvable fixture names would spend a
+        // connection timeout each while asserting nothing.
         write!(
             file,
-            "config_version = 1\nenvironment = \"lab\"\n\n[database]\npath = \"{}\"\n{extra}",
+            "config_version = 1\nenvironment = \"lab\"\n\n[controller]\nobserve = false\n\n[database]\npath = \"{}\"\n{extra}",
             dir.join("sentinel.db").display()
         )
         .expect("write");

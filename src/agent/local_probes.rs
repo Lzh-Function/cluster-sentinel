@@ -17,9 +17,15 @@ use crate::entity::{EntityId, EntityType};
 use crate::observation::Observation;
 use crate::probes::{ExecutionMode, Probe, ProbeContext, ProbeId, ProbeRunner, Skipped};
 
-/// A probe and when it is next due.
+/// A probe, its parameters, and when it is next due.
+///
+/// Parameters are per entry rather than per agent, because one host can mount
+/// several filesystems and each needs its own probe with its own mount point —
+/// and, crucially, its own concurrency slot, so one wedged mount does not stop
+/// the others being checked.
 struct Scheduled {
     probe: Arc<dyn Probe>,
+    parameters: serde_json::Value,
     next_due: Instant,
 }
 
@@ -62,10 +68,32 @@ impl LocalProbes {
             let jitter = agent.jitter_for(&probe.definition().id, probe.definition().interval);
             agent.scheduled.push(Scheduled {
                 probe,
+                parameters: serde_json::Value::Null,
                 next_due: now + jitter,
             });
         }
         agent
+    }
+
+    /// Schedule an additional probe with its own parameters.
+    ///
+    /// Used for probes that apply once per mount, per unit or per device rather
+    /// than once per host. Each entry gets its own concurrency slot, so one
+    /// wedged mount does not stop the others being checked.
+    ///
+    /// Returns whether the probe was scheduled; a probe this host lacks the
+    /// capability for is refused.
+    pub fn add(&mut self, probe: Arc<dyn Probe>, parameters: serde_json::Value) -> bool {
+        if !self.applies(probe.as_ref()) {
+            return false;
+        }
+        let jitter = self.jitter_for(&probe.definition().id, probe.definition().interval);
+        self.scheduled.push(Scheduled {
+            probe,
+            parameters,
+            next_due: Instant::now() + jitter,
+        });
+        true
     }
 
     /// Builder: set probe parameters (unit names, mount points, and so on).
@@ -127,8 +155,13 @@ impl LocalProbes {
             let probe = Arc::clone(&self.scheduled[index].probe);
             let definition = probe.definition().clone();
 
+            // Per-probe parameters win; the agent-wide set is the fallback.
+            let parameters = match &self.scheduled[index].parameters {
+                serde_json::Value::Null => self.parameters.clone(),
+                specific => specific.clone(),
+            };
             let context = ProbeContext::local(self.entity, self.capabilities.clone())
-                .with_parameters(self.parameters.clone())
+                .with_parameters(parameters)
                 .with_timeout(definition.timeout);
 
             match self.runner.run(probe, context).await {
@@ -293,6 +326,32 @@ mod tests {
         let a = local.jitter_for(&ProbeId::new("probe.a"), interval);
         let b = local.jitter_for(&ProbeId::new("probe.bb"), interval);
         assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn a_probe_can_be_scheduled_more_than_once_with_different_parameters() {
+        // One host, several mounts: each needs its own probe and its own
+        // concurrency slot.
+        let (probe, runs) = CountingProbe::new(ProbeDefinition::new("fs.probe"));
+        let mut local = LocalProbes::with_probes(entity(), CapabilitySet::new(), vec![]);
+
+        assert!(local.add(
+            Arc::clone(&probe) as Arc<dyn Probe>,
+            serde_json::json!({"mount_point": "/home"})
+        ));
+        assert!(local.add(probe as Arc<dyn Probe>, serde_json::json!({"mount_point": "/scratch"})));
+        assert_eq!(local.len(), 2);
+
+        local.run_all().await;
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn adding_a_probe_the_host_lacks_the_capability_for_is_refused() {
+        let mut local = LocalProbes::with_probes(entity(), CapabilitySet::new(), vec![]);
+        let probe = Arc::new(crate::probes::nfs::NfsClientIoProbe::new()) as Arc<dyn Probe>;
+        assert!(!local.add(probe, serde_json::json!({"mount_point": "/home"})));
+        assert!(local.is_empty());
     }
 
     #[tokio::test]

@@ -43,6 +43,19 @@ if [[ -w /sys/fs/cgroup ]]; then
     done
 fi
 
+# --- storage role ----------------------------------------------------------
+# A real export list. The storage service reads it, and Sentinel's capability
+# discovery detects `storage.nfs.server` from it exactly as it would on a real
+# fileserver -- the capability is discovered, not declared.
+if [[ "${ROLE}" == "fileserver" && ! -f /etc/exports ]]; then
+    cat > /etc/exports <<'EXPORTS'
+# Exported by the Sentinel pseudo-cluster storage service.
+/export/home    *(rw,sync,no_subtree_check)
+/export/scratch *(rw,async,no_subtree_check)
+EXPORTS
+    mkdir -p /export/home /export/scratch
+fi
+
 # --- sentinel --------------------------------------------------------------
 mkdir -p /var/lib/sentinel /run/sentinel
 

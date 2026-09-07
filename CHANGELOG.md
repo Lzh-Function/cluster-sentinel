@@ -5,6 +5,25 @@
 
 ## 未リリース
 
+### M6 — Storage / NFS
+
+* NFS probe を危険度で分割:
+  * `nfs.client.mount` — `/proc/self/mounts` のみ。hang 中も安全。
+  * `nfs.client.io` — 実 I/O。**mount ごとに同時 1 本**（`SPEC.md` §76）。
+  * `nfs.server.port` / `nfs.server.exports` — 到達性と export 一覧。
+* `NFS_OK` / `NFS_SLOW` / `NFS_TIMEOUT` / `NFS_STUCK` の区別。
+* Storage 診断 rule:
+  * `NFS_SERVICE_FAILURE` — host は稼働、export service のみ異常。
+  * `SHARED_STORAGE_FAILURE` — 同一 storage の複数 client が同時異常。
+    group は dependency graph から**導出**し、宣言しない。
+  * `NFS_CLIENT_FAILURE` — 1 client のみ異常、同一 storage の peer は正常。
+  最後の 2 つは相互排他であることをテストで強制。
+* Agent は NFS mount ごとに probe を個別スケジュール（同時実行枠も個別）。
+* Slurm capability 検出をより保守的に変更。
+  `slurm.conf` が読めない host は Slurm role を主張しない。
+  バイナリの存在だけでは fileserver が compute node を名乗ってしまう。
+* `[controller] observe` を追加。controller 自身が remote probe を行うかの制御。
+
 ### M5 — Slurm Diagnosis
 
 * Diagnosis engine: typed Rust rule、決定的評価、rule の panic 隔離。

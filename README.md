@@ -39,7 +39,7 @@ out-of-band な証拠なしにこれを主張しません。
 | M3 | Docker Compose 疑似クラスタ | 完了 |
 | M4 | Host / network / SSH / agent 監視 | 完了 |
 | M5 | Slurm 診断 | 完了 |
-| M6 | Storage / NFS | 未着手 |
+| M6 | Storage / NFS | 完了 |
 | M7 | GPU | 未着手 |
 | M8 | Peer monitoring | 未着手 |
 | M9 | Diagnosis / incident correlation | 未着手 |

@@ -53,6 +53,12 @@ fn config_for(dir: &Path, scontrol: &Path, extra: &str) -> Config {
 config_version = 1
 environment = "lab"
 
+[controller]
+# This suite is about Slurm discovery. Remote probing of fixture host names
+# that do not resolve would spend a connection timeout each and assert nothing;
+# observation is covered by the M4 acceptance tests.
+observe = false
+
 [database]
 path = "{db}"
 

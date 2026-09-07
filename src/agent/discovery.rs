@@ -160,8 +160,17 @@ mod tests {
     }
 
     #[test]
-    fn a_compute_node_is_recognised_by_what_is_installed() {
-        let found = detect(&FakeInspector::bare().with_program("slurmd").with_program("nvidia-smi"));
+    fn a_compute_node_is_recognised_by_what_is_configured() {
+        let inspector = FakeInspector::bare()
+            .with_hostname("compute01")
+            .with_program("slurmd")
+            .with_program("nvidia-smi")
+            .with_file(
+                "/etc/slurm/slurm.conf",
+                "SlurmctldHost=ctl-a\nNodeName=compute[01-03] CPUs=1\n",
+            );
+
+        let found = detect(&inspector);
         assert_eq!(
             outcome(&found, well_known::SLURM_COMPUTE),
             Some(DiscoveryOutcome::Detected)
@@ -169,6 +178,28 @@ mod tests {
         assert_eq!(
             outcome(&found, well_known::GPU_NVIDIA),
             Some(DiscoveryOutcome::Detected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::SLURM_CONTROLLER),
+            Some(DiscoveryOutcome::NotDetected),
+            "this host is a node, not the control plane"
+        );
+    }
+
+    #[test]
+    fn installed_slurm_binaries_alone_do_not_make_a_host_a_slurm_node() {
+        // A fileserver with the client tools installed and no slurm.conf.
+        // Claiming a Slurm role here would start scheduler probes against a
+        // machine that has nothing to do with the scheduler.
+        let inspector = FakeInspector::bare()
+            .with_hostname("fileserver-a")
+            .with_program("slurmd")
+            .with_program("slurmctld");
+
+        let found = detect(&inspector);
+        assert_eq!(
+            outcome(&found, well_known::SLURM_COMPUTE),
+            Some(DiscoveryOutcome::NotDetected)
         );
         assert_eq!(
             outcome(&found, well_known::SLURM_CONTROLLER),
