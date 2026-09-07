@@ -145,6 +145,14 @@ impl StateEngine {
         self.states.values()
     }
 
+    /// One entity's state, mutably, so a diagnosis can attach a classification.
+    ///
+    /// Classifications come from rules rather than probes, because only a rule
+    /// has weighed enough evidence to justify one.
+    pub fn state_mut(&mut self, entity: EntityId) -> Option<&mut EntityState> {
+        self.states.get_mut(&entity)
+    }
+
     /// Seed an entity's state, for rehydrating from the database.
     pub fn seed(&mut self, state: EntityState) {
         for (component, component_state) in &state.components {

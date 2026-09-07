@@ -11,6 +11,7 @@
 
 pub mod agents;
 pub mod api;
+mod diagnose;
 mod discovery;
 pub mod observer;
 pub mod registration;
@@ -25,6 +26,7 @@ pub use server::{serve, ServeOptions, ServerHandle};
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::diagnosis::{builtin_rules, DiagnosisEngine};
 use crate::integrations::slurm::{observe, ScontrolClient};
 use crate::inventory::slurm::SlurmInventoryProvider;
 use crate::inventory::static_config::StaticConfigProvider;
@@ -42,6 +44,7 @@ pub struct Controller {
     store: SqliteStore,
     providers: Vec<Arc<dyn InventoryProvider>>,
     engine: StateEngine,
+    diagnosis: DiagnosisEngine,
 }
 
 impl Controller {
@@ -73,7 +76,13 @@ impl Controller {
             store,
             providers,
             engine,
+            diagnosis: builtin_rules(),
         })
+    }
+
+    /// The diagnosis engine.
+    pub fn diagnosis_engine(&self) -> &DiagnosisEngine {
+        &self.diagnosis
     }
 
     /// The configuration in force.

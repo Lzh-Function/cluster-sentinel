@@ -5,6 +5,25 @@
 
 ## 未リリース
 
+### M5 — Slurm Diagnosis
+
+* Diagnosis engine: typed Rust rule、決定的評価、rule の panic 隔離。
+  DSL も LLM も使わない（`SPEC.md` §94）。
+* `DiagnosisContext`: rule が参照できるのは保存済みの
+  inventory / state / observation のみ。
+  外部通信もコマンド実行も行わないため、診断は後から再現・検証できる。
+* Slurm rule:
+  * `SLURM_ONLY_DEGRADATION` — host は健全、Slurm 上のみ DRAIN。
+  * `SLURMD_SERVICE_FAILURE` — host は応答するが slurmd が登録しない。
+  * `SLURM_CONTROL_PLANE_FAILURE` — control plane 自体の異常。
+  * `RESOURCE_CONFIGURATION_MISMATCH` / `GPU_CONFIGURATION_MISMATCH`。
+* すべての rule が「host が健全である積極的証拠」を要求する。
+  証拠が無ければ診断を出さない。
+  これが無いと、死んだ host が「死んだ daemon」として報告される。
+* `sentinel diagnose` を追加。診断・根拠・read-only な調査コマンドを表示。
+* 疑似クラスタで検証: drain / slurmd 停止 / host 停止 が
+  それぞれ異なる結果（3 つ目は「診断を出さない」）になること。
+
 ### M4 — Basic Host Monitoring
 
 * Probe runner: timeout、panic 隔離、target ごとの同時実行数制限。

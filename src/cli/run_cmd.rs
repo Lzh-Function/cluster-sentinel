@@ -5,6 +5,7 @@ use crate::controller::Controller;
 use crate::persistence::SqliteStore;
 
 use super::{status_cmd, Cli, DependencyCommand, EntityCommand};
+use crate::diagnosis::Diagnosis;
 
 /// Open the configured database, applying migrations.
 async fn open_store(config: &Config) -> anyhow::Result<SqliteStore> {
@@ -80,6 +81,75 @@ pub async fn discover(cli: &Cli, json: bool) -> anyhow::Result<i32> {
     // A provider failing is worth a non-zero exit: discovery ran, but the
     // picture is incomplete and a caller should know.
     Ok(if report.all_providers_ok() { 0 } else { 1 })
+}
+
+/// `sentinel diagnose`: explain what is wrong.
+pub async fn diagnose(cli: &Cli, json: bool) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let controller = Controller::new(config, store).await?;
+    let diagnoses = controller.diagnose().await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&diagnoses)?);
+    } else {
+        print!("{}", render_diagnoses(&controller, &diagnoses).await?);
+    }
+
+    Ok(if diagnoses.is_empty() { 0 } else { 2 })
+}
+
+/// Render diagnoses for a human, resolving entity ids to names.
+async fn render_diagnoses(controller: &Controller, diagnoses: &[Diagnosis]) -> anyhow::Result<String> {
+    if diagnoses.is_empty() {
+        return Ok("No problems diagnosed.\n".to_string());
+    }
+
+    let inventory = controller
+        .store()
+        .load_inventory(&controller.config().environment)
+        .await?;
+    let name_of = |id: crate::entity::EntityId| {
+        inventory
+            .get(id)
+            .map(|e| format!("{}/{}", e.entity_type, e.canonical_name))
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    let mut out = String::new();
+    for diagnosis in diagnoses {
+        out.push_str(&format!("{} [{}]\n", diagnosis.diagnosis_type, diagnosis.confidence));
+        out.push_str(&format!("  {}\n", diagnosis.summary));
+
+        if !diagnosis.suspected_root_entities.is_empty() {
+            let roots: Vec<_> = diagnosis
+                .suspected_root_entities
+                .iter()
+                .map(|id| name_of(*id))
+                .collect();
+            out.push_str(&format!("  suspected cause: {}\n", roots.join(", ")));
+        }
+        if !diagnosis.affected_entities.is_empty() {
+            let affected: Vec<_> = diagnosis.affected_entities.iter().map(|id| name_of(*id)).collect();
+            out.push_str(&format!("  affected:        {}\n", affected.join(", ")));
+        }
+
+        out.push_str(&format!("  rule:            {}\n", diagnosis.rule_id));
+        out.push_str(&format!(
+            "  evidence:        {} observation(s)\n",
+            diagnosis.evidence.len()
+        ));
+
+        if !diagnosis.recommended_actions.is_empty() {
+            out.push_str("  suggested investigation (read-only):\n");
+            for action in &diagnosis.recommended_actions {
+                out.push_str(&format!("    {action}\n"));
+            }
+        }
+        out.push('\n');
+    }
+
+    Ok(out)
 }
 
 /// `sentinel entity ...`.

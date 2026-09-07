@@ -38,7 +38,7 @@ out-of-band な証拠なしにこれを主張しません。
 | M2 | Agent、protocol、spool | 完了 |
 | M3 | Docker Compose 疑似クラスタ | 完了 |
 | M4 | Host / network / SSH / agent 監視 | 完了 |
-| M5 | Slurm 診断 | 未着手 |
+| M5 | Slurm 診断 | 完了 |
 | M6 | Storage / NFS | 未着手 |
 | M7 | GPU | 未着手 |
 | M8 | Peer monitoring | 未着手 |
@@ -62,6 +62,7 @@ sentinel status
 sentinel entity list
 sentinel entity show <name>
 sentinel dependency list
+sentinel diagnose
 ```
 
 いずれも `--json` を付ければ機械可読出力になります。

@@ -5,6 +5,13 @@
 //! explanation an operator is woken up for must be reproducible from the stored
 //! evidence.
 
+mod context;
+mod engine;
+pub mod rules;
+
+pub use context::{DiagnosisContext, ObservationIndex};
+pub use engine::{builtin_rules, DiagnosisEngine, DiagnosisRule};
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

@@ -49,6 +49,8 @@ pub struct DiscoveryReport {
     pub observations: usize,
     /// State transitions this cycle caused.
     pub transitions: Vec<StateTransition>,
+    /// Diagnoses drawn from the resulting picture.
+    pub diagnoses: Vec<crate::diagnosis::Diagnosis>,
 }
 
 impl DiscoveryReport {
@@ -142,6 +144,9 @@ impl Controller {
         for state in self.engine.states() {
             self.store().save_entity_state(state).await?;
         }
+
+        // Diagnosis runs last, over everything this cycle established.
+        report.diagnoses = self.diagnose_and_classify().await?;
 
         Ok(report)
     }
