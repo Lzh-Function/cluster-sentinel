@@ -4,14 +4,19 @@
 //! * Probe latency and timeouts use a **monotonic** clock ([`std::time::Instant`]).
 //! * Incident timelines use wall clock.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 
 /// A UTC wall-clock instant. This is the only timestamp type persisted.
 pub type Timestamp = DateTime<Utc>;
 
-/// Current UTC wall clock.
+/// Current UTC wall clock, truncated to microseconds.
+///
+/// The truncation matters: [`to_rfc3339`] persists microseconds, so a timestamp
+/// that kept nanoseconds in memory would not equal itself after a round trip
+/// through the database. Sub-microsecond resolution is of no use to a monitoring
+/// system, and latency is measured on a monotonic clock regardless.
 pub fn now() -> Timestamp {
-    Utc::now()
+    Utc::now().trunc_subsecs(6)
 }
 
 /// Serialize a timestamp to the canonical persisted form (RFC3339, UTC).
@@ -27,6 +32,14 @@ pub fn parse_rfc3339(s: &str) -> Result<Timestamp, chrono::ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_timestamp_survives_a_database_round_trip_exactly() {
+        // Equality after persistence is relied on by the observation tests and
+        // by idempotent ingestion.
+        let now = now();
+        assert_eq!(parse_rfc3339(&to_rfc3339(now)).expect("parse"), now);
+    }
 
     #[test]
     fn rfc3339_roundtrip_is_stable() {

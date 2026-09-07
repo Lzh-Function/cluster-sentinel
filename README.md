@@ -34,7 +34,7 @@ out-of-band な証拠なしにこれを主張しません。
 | Milestone | 範囲 | 状態 |
 | --- | --- | --- |
 | M0 | Repository / core domain / config / migration / CLI skeleton | 完了 |
-| M1 | Passive controller、Slurm discovery、`sentinel status` | 未着手 |
+| M1 | Passive controller、Slurm discovery、`sentinel status` | 完了 |
 | M2 | Agent、protocol、spool | 未着手 |
 | M3 | Docker Compose 疑似クラスタ | 未着手 |
 | M4 | Host / network / SSH / agent 監視 | 未着手 |
@@ -57,7 +57,16 @@ cargo build --release
 ```bash
 sentinel version
 sentinel config check
+sentinel discover
+sentinel status
+sentinel entity list
+sentinel entity show <name>
+sentinel dependency list
 ```
+
+いずれも `--json` を付ければ機械可読出力になります。
+`sentinel status` は異常があれば exit code 2 を返すため、
+health check やスクリプトから利用できます。
 
 ## ドキュメント
 

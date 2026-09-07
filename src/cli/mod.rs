@@ -4,7 +4,11 @@
 //! not yet implemented says so rather than pretending to succeed.
 
 mod config_cmd;
+mod run_cmd;
+mod status_cmd;
 mod version_cmd;
+
+pub use status_cmd::{EntityStatus, StatusReport};
 
 use std::path::PathBuf;
 
@@ -60,6 +64,63 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Show the state of the environment.
+    Status {
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one inventory discovery cycle now.
+    Discover {
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect entities.
+    Entity {
+        /// The entity subcommand.
+        #[command(subcommand)]
+        command: EntityCommand,
+    },
+    /// Inspect the dependency graph.
+    Dependency {
+        /// The dependency subcommand.
+        #[command(subcommand)]
+        command: DependencyCommand,
+    },
+}
+
+/// `sentinel entity ...`.
+#[derive(Debug, Subcommand)]
+pub enum EntityCommand {
+    /// List entities.
+    List {
+        /// Only entities of this type.
+        #[arg(long = "type")]
+        entity_type: Option<String>,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one entity in detail, by name or by id.
+    Show {
+        /// Entity canonical name or id.
+        name: String,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// `sentinel dependency ...`.
+#[derive(Debug, Subcommand)]
+pub enum DependencyCommand {
+    /// List dependency edges.
+    List {
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `sentinel config ...`.
@@ -84,6 +145,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
     match &cli.command {
         Command::Version { json } => version_cmd::run(*json),
         Command::Config { command } => config_cmd::run(&cli, command).await,
+        Command::Status { json } => run_cmd::status(&cli, *json).await,
+        Command::Discover { json } => run_cmd::discover(&cli, *json).await,
+        Command::Entity { command } => run_cmd::entity(&cli, command).await,
+        Command::Dependency { command } => run_cmd::dependency(&cli, command).await,
     }
 }
 
@@ -125,6 +190,68 @@ mod tests {
     fn verbosity_counts_up() {
         let cli = Cli::try_parse_from(["sentinel", "-vv", "version"]).expect("parse");
         assert_eq!(cli.verbose, 2);
+    }
+
+    #[test]
+    fn the_read_only_verbs_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["sentinel", "status"]).expect("parse").command,
+            Command::Status { json: false }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["sentinel", "entity", "list"])
+                .expect("parse")
+                .command,
+            Command::Entity {
+                command: EntityCommand::List {
+                    entity_type: None,
+                    json: false
+                }
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["sentinel", "dependency", "list"])
+                .expect("parse")
+                .command,
+            Command::Dependency {
+                command: DependencyCommand::List { json: false }
+            }
+        ));
+    }
+
+    #[test]
+    fn entity_show_takes_a_name_and_entity_list_takes_a_type_filter() {
+        let cli = Cli::try_parse_from(["sentinel", "entity", "show", "node-a"]).expect("parse");
+        match cli.command {
+            Command::Entity {
+                command: EntityCommand::Show { name, .. },
+            } => assert_eq!(name, "node-a"),
+            other => panic!("unexpected command {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["sentinel", "entity", "list", "--type", "storage"]).expect("parse");
+        match cli.command {
+            Command::Entity {
+                command: EntityCommand::List { entity_type, .. },
+            } => {
+                assert_eq!(entity_type.as_deref(), Some("storage"));
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_verb_supports_json_output_for_scripting() {
+        for args in [
+            vec!["sentinel", "status", "--json"],
+            vec!["sentinel", "discover", "--json"],
+            vec!["sentinel", "entity", "list", "--json"],
+            vec!["sentinel", "dependency", "list", "--json"],
+            vec!["sentinel", "version", "--json"],
+            vec!["sentinel", "config", "check", "--json"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
     }
 
     #[test]

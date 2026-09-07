@@ -22,11 +22,15 @@
 
 pub mod capability;
 pub mod cli;
+pub mod command;
 pub mod config;
+pub mod controller;
 pub mod dependency;
 pub mod diagnosis;
 pub mod entity;
 pub mod incident;
+pub mod integrations;
+pub mod inventory;
 pub mod observation;
 pub mod persistence;
 pub mod probes;

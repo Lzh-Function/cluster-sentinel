@@ -4,8 +4,11 @@
 //! repository traits in this module so that moving to PostgreSQL later is a new
 //! implementation rather than a rewrite (SPEC.md §125).
 
+mod entities;
+mod observations;
 mod sqlite;
 
+pub use observations::IngestOutcome;
 pub use sqlite::SqliteStore;
 
 use std::path::Path;

@@ -7,8 +7,10 @@
 //! It deliberately does **not** answer "why" — that is the diagnosis engine.
 
 mod debounce;
+mod engine;
 
 pub use debounce::{DebouncePolicy, Debouncer};
+pub use engine::{ProbeMapping, StateEngine};
 
 use std::collections::BTreeMap;
 use std::fmt;

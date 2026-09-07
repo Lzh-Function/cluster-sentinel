@@ -1,0 +1,329 @@
+//! Command wiring for the verbs that need a database or a controller.
+
+use crate::config::Config;
+use crate::controller::Controller;
+use crate::persistence::SqliteStore;
+
+use super::{status_cmd, Cli, DependencyCommand, EntityCommand};
+
+/// Open the configured database, applying migrations.
+async fn open_store(config: &Config) -> anyhow::Result<SqliteStore> {
+    Ok(SqliteStore::open(&config.database.path).await?)
+}
+
+/// `sentinel status`.
+pub async fn status(cli: &Cli, json: bool) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let report = status_cmd::load_report(&store, &config.environment).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", status_cmd::render(&report));
+    }
+
+    // Exit non-zero when something is wrong, so `sentinel status` composes with
+    // shell scripts and health checks.
+    Ok(if report.is_healthy() { 0 } else { 2 })
+}
+
+/// `sentinel discover`: run one discovery cycle now.
+pub async fn discover(cli: &Cli, json: bool) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let mut controller = Controller::new(config, store).await?;
+    let report = controller.discover_once().await?;
+
+    if json {
+        let providers: Vec<_> = report
+            .providers
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "provider": p.provider,
+                    "entities": p.entities,
+                    "dependencies": p.dependencies,
+                    "error": p.error,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "providers": providers,
+                "entities": report.entities,
+                "dependencies": report.dependencies,
+                "observations": report.observations,
+                "transitions": report.transitions.len(),
+            }))?
+        );
+    } else {
+        for provider in &report.providers {
+            match &provider.error {
+                Some(error) => println!("{:<16} FAILED  {error}", provider.provider),
+                None => println!(
+                    "{:<16} ok      {} entities, {} dependencies",
+                    provider.provider, provider.entities, provider.dependencies
+                ),
+            }
+        }
+        println!(
+            "\ninventory: {} entities, {} dependencies\nobservations: {} new, {} state transitions",
+            report.entities,
+            report.dependencies,
+            report.observations,
+            report.transitions.len()
+        );
+    }
+
+    // A provider failing is worth a non-zero exit: discovery ran, but the
+    // picture is incomplete and a caller should know.
+    Ok(if report.all_providers_ok() { 0 } else { 1 })
+}
+
+/// `sentinel entity ...`.
+pub async fn entity(cli: &Cli, command: &EntityCommand) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let report = status_cmd::load_report(&store, &config.environment).await?;
+
+    match command {
+        EntityCommand::List { json, entity_type } => {
+            let entities: Vec<_> = report
+                .entities
+                .iter()
+                .filter(|e| entity_type.as_ref().is_none_or(|t| &e.entity_type == t))
+                .collect();
+
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&entities)?);
+            } else if entities.is_empty() {
+                println!("No matching entities.");
+            } else {
+                for entity in entities {
+                    println!(
+                        "{:<20} {:<10} {}",
+                        entity.name,
+                        entity.entity_type,
+                        entity.health.to_uppercase()
+                    );
+                }
+            }
+            Ok(0)
+        }
+        EntityCommand::Show { name, json } => {
+            // Accept either the canonical name or the entity id, so an id
+            // copied out of a diagnosis can be pasted straight back in.
+            let Some(entity) = report.entities.iter().find(|e| &e.name == name || &e.id == name) else {
+                eprintln!(
+                    "error: no entity named {name:?} in environment {:?}",
+                    config.environment
+                );
+                return Ok(1);
+            };
+            if *json {
+                println!("{}", serde_json::to_string_pretty(entity)?);
+            } else {
+                print!("{}", status_cmd::render_entity(entity));
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// `sentinel dependency ...`.
+pub async fn dependency(cli: &Cli, command: &DependencyCommand) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let inventory = store.load_inventory(&config.environment).await?;
+
+    let name_of = |id: crate::entity::EntityId| {
+        inventory
+            .get(id)
+            .map(|e| format!("{}/{}", e.entity_type, e.canonical_name))
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    match command {
+        DependencyCommand::List { json } => {
+            let edges: Vec<_> = inventory
+                .graph()
+                .edges()
+                .iter()
+                .map(|edge| {
+                    serde_json::json!({
+                        "from": name_of(edge.source),
+                        "to": name_of(edge.target),
+                        "type": edge.dependency_type.as_str(),
+                        "criticality": edge.criticality.as_str(),
+                        "discovery_source": edge.discovery_source.as_str(),
+                    })
+                })
+                .collect();
+
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&edges)?);
+            } else if edges.is_empty() {
+                println!("No dependencies known.");
+            } else {
+                for edge in &edges {
+                    println!(
+                        "{} --{}--> {}  ({})",
+                        edge["from"].as_str().unwrap_or_default(),
+                        edge["type"].as_str().unwrap_or_default(),
+                        edge["to"].as_str().unwrap_or_default(),
+                        edge["criticality"].as_str().unwrap_or_default()
+                    );
+                }
+            }
+            Ok(0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Command;
+    use std::io::Write;
+
+    fn write_config(dir: &std::path::Path, extra: &str) -> std::path::PathBuf {
+        let path = dir.join("config.toml");
+        let mut file = std::fs::File::create(&path).expect("create");
+        write!(
+            file,
+            "config_version = 1\nenvironment = \"lab\"\n\n[database]\npath = \"{}\"\n{extra}",
+            dir.join("sentinel.db").display()
+        )
+        .expect("write");
+        path
+    }
+
+    fn cli_for(path: &std::path::Path) -> Cli {
+        Cli {
+            config: path.to_path_buf(),
+            verbose: 0,
+            log_json: false,
+            command: Command::Status { json: false },
+        }
+    }
+
+    #[tokio::test]
+    async fn status_on_an_empty_environment_succeeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(&write_config(dir.path(), ""));
+        assert_eq!(status(&cli, false).await.expect("status"), 0);
+        assert_eq!(status(&cli, true).await.expect("status json"), 0);
+    }
+
+    #[tokio::test]
+    async fn discover_then_status_reports_the_configured_entities() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(&write_config(
+            dir.path(),
+            "\n[[entities]]\ntype = \"host\"\nname = \"fileserver-a\"\ncapabilities = [\"storage.nfs.server\"]\n",
+        ));
+
+        assert_eq!(discover(&cli, false).await.expect("discover"), 0);
+
+        let config = Config::load(&cli.config).expect("config");
+        let store = SqliteStore::open(&config.database.path).await.expect("store");
+        let report = status_cmd::load_report(&store, "lab").await.expect("report");
+
+        assert_eq!(report.entities.len(), 1);
+        assert_eq!(report.entities[0].name, "fileserver-a");
+        // Nothing has observed it yet, so it must read unknown, not healthy.
+        assert_eq!(report.entities[0].health, "unknown");
+    }
+
+    #[tokio::test]
+    async fn status_exits_non_zero_when_something_is_degraded() {
+        use crate::state::{ComponentState, EntityState, Health, StateComponent};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(&write_config(
+            dir.path(),
+            "\n[[entities]]\ntype = \"host\"\nname = \"node-a\"\n",
+        ));
+        discover(&cli, false).await.expect("discover");
+
+        let config = Config::load(&cli.config).expect("config");
+        let store = SqliteStore::open(&config.database.path).await.expect("store");
+        let id = crate::entity::EntityKey::new("lab", crate::entity::EntityType::Host, "node-a").entity_id();
+        let mut state = EntityState::unknown(id);
+        state.set_component(StateComponent::Scheduler, ComponentState::new(Health::Degraded));
+        store.save_entity_state(&state).await.expect("save state");
+        store.close().await;
+
+        assert_eq!(status(&cli, false).await.expect("status"), 2);
+    }
+
+    #[tokio::test]
+    async fn showing_an_unknown_entity_fails_cleanly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(&write_config(dir.path(), ""));
+        let command = EntityCommand::Show {
+            name: "nope".into(),
+            json: false,
+        };
+        assert_eq!(entity(&cli, &command).await.expect("entity show"), 1);
+    }
+
+    #[tokio::test]
+    async fn an_entity_can_be_shown_by_name_or_by_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(&write_config(
+            dir.path(),
+            "\n[[entities]]\ntype = \"host\"\nname = \"node-a\"\n",
+        ));
+        discover(&cli, false).await.expect("discover");
+
+        let id = crate::entity::EntityKey::new("lab", crate::entity::EntityType::Host, "node-a")
+            .entity_id()
+            .to_string();
+        for name in ["node-a".to_string(), id] {
+            let command = EntityCommand::Show { name, json: true };
+            assert_eq!(entity(&cli, &command).await.expect("entity show"), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn dependencies_are_listed_with_readable_endpoint_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(&write_config(
+            dir.path(),
+            r#"
+[[entities]]
+type = "host"
+name = "node-a"
+
+[[entities]]
+type = "storage"
+name = "shared-a"
+
+[[dependencies]]
+from = "host/node-a"
+to = "storage/shared-a"
+type = "uses_storage"
+"#,
+        ));
+        discover(&cli, false).await.expect("discover");
+        assert_eq!(
+            dependency(&cli, &DependencyCommand::List { json: true })
+                .await
+                .expect("list"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_provider_makes_discover_exit_non_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(&write_config(
+            dir.path(),
+            "\n[discovery.slurm]\nenabled = true\nscontrol_path = \"/nonexistent/scontrol\"\n",
+        ));
+        assert_eq!(discover(&cli, false).await.expect("discover"), 1);
+    }
+}
