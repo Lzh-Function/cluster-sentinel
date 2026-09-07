@@ -5,6 +5,26 @@
 
 ## 未リリース
 
+### M8 — Peer Monitoring
+
+* Peer assignment（`SPEC.md` §46-§49）。
+  observer は「互いに似ていない」ことを優先して選ぶ:
+  同一 dependency domain / 異なる domain / 依存を共有しない infrastructure。
+  同じ storage の背後にいる observer 3 台は、視点 1 つを 3 回数えただけ。
+* 決定的な割り当て。controller 再起動で全 observer が入れ替わり、
+  debounce counter が一斉にリセットされることを防ぐ。
+* `GET /v1/agents/{id}/assignments`。address は controller が inventory から解決し、
+  agent が推測する余地を残さない。
+* Agent は割り当てられた peer を観測し、observation に自分を署名する。
+  controller 到達不能時も、既存の割り当てで観測を継続する。
+* Reachability rule:
+  * `HOST_UNREACHABLE` — 独立した observer が **全員** 失敗（2 台以上）。
+  * `PATH_SPECIFIC_NETWORK_FAILURE` — 一部のみ失敗。
+  * observer が 1 台だけなら **どちらも出さない**。
+* `POWER_OFF` を主張しない。confidence は `High` 止まりで `Confirmed` にしない。
+  電源断・NIC 故障・switch 障害はここからは同じに見える。
+* `sentinel peers` を追加。observer が付いていない entity を明示する。
+
 ### M7 — GPU
 
 * `gpu.nvidia` probe（`nvidia-smi` の CSV 出力を parse）。

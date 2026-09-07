@@ -9,8 +9,8 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::protocol::{
-    ClusterCredential, HeartbeatRequest, HeartbeatResponse, ObservationBatch, ObservationBatchResponse,
-    RegisterRequest, RegisterResponse, API_PREFIX,
+    AssignmentsResponse, ClusterCredential, HeartbeatRequest, HeartbeatResponse, ObservationBatch,
+    ObservationBatchResponse, RegisterRequest, RegisterResponse, API_PREFIX,
 };
 
 /// Why a call to the controller did not succeed.
@@ -113,6 +113,28 @@ impl ControllerClient {
         self.post("/observations/batch", batch).await
     }
 
+    /// Fetch what this agent has been asked to observe.
+    pub async fn assignments(&self, agent_id: uuid::Uuid) -> Result<AssignmentsResponse, ClientError> {
+        self.get(&format!("/agents/{agent_id}/assignments")).await
+    }
+
+    async fn get<Res: serde::de::DeserializeOwned>(&self, path: &str) -> Result<Res, ClientError> {
+        let url = format!("{}{API_PREFIX}{path}", self.base_url);
+
+        let response = self
+            .http
+            .get(&url)
+            .header(crate::protocol::AUTH_HEADER, &self.credential)
+            .send()
+            .await
+            .map_err(|e| ClientError::Unreachable {
+                endpoint: url.clone(),
+                detail: e.to_string(),
+            })?;
+
+        Self::decode(response).await
+    }
+
     async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(
         &self,
         path: &str,
@@ -132,6 +154,10 @@ impl ControllerClient {
                 detail: e.to_string(),
             })?;
 
+        Self::decode(response).await
+    }
+
+    async fn decode<Res: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<Res, ClientError> {
         let status = response.status();
         if status.is_success() {
             return response.json().await.map_err(|e| ClientError::Decode(e.to_string()));

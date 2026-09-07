@@ -41,7 +41,7 @@ out-of-band な証拠なしにこれを主張しません。
 | M5 | Slurm 診断 | 完了 |
 | M6 | Storage / NFS | 完了 |
 | M7 | GPU | 完了 |
-| M8 | Peer monitoring | 未着手 |
+| M8 | Peer monitoring | 完了 |
 | M9 | Diagnosis / incident correlation | 未着手 |
 | M10 | Notification / operations | 未着手 |
 
@@ -63,6 +63,7 @@ sentinel entity list
 sentinel entity show <name>
 sentinel dependency list
 sentinel diagnose
+sentinel peers
 ```
 
 いずれも `--json` を付ければ機械可読出力になります。

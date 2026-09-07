@@ -112,7 +112,11 @@ impl Controller {
         // call a host dead, which is why these observations carry an observer
         // and the diagnosis engine weighs them together (SPEC.md §50).
         if self.config().controller.observe {
-            observations.extend(RemoteObserver::new().observe_all(inventory.entities()).await);
+            let mut observer = RemoteObserver::new();
+            if let Some(entity) = self.observer_entity() {
+                observer = observer.observed_by(entity);
+            }
+            observations.extend(observer.observe_all(inventory.entities()).await);
         }
 
         // Slurm contributes observations as well as inventory: what the

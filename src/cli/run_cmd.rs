@@ -83,6 +83,94 @@ pub async fn discover(cli: &Cli, json: bool) -> anyhow::Result<i32> {
     Ok(if report.all_providers_ok() { 0 } else { 1 })
 }
 
+/// `sentinel peers`: show who observes whom.
+///
+/// Worth being able to see directly: an entity watched by only one observer
+/// cannot have `HOST_UNREACHABLE` concluded about it, and an operator wondering
+/// why should be able to find out in one command.
+pub async fn peers(cli: &Cli, json: bool) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let controller = Controller::new(config.clone(), store).await?;
+
+    let plan = controller.assignment_plan().await?;
+    let inventory = controller.store().load_inventory(&config.environment).await?;
+    let name_of = |id: crate::entity::EntityId| {
+        inventory
+            .get(id)
+            .map(|e| e.canonical_name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    if json {
+        let rendered: Vec<_> = plan
+            .assignments
+            .iter()
+            .map(|assignment| {
+                serde_json::json!({
+                    "target": name_of(assignment.target),
+                    "independent_viewpoints": assignment.independent_viewpoints(),
+                    "observers": assignment
+                        .observers
+                        .iter()
+                        .map(|o| serde_json::json!({"observer": name_of(o.entity), "role": o.role}))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "revision": plan.revision,
+                "degree": config.peer_monitoring.degree,
+                "assignments": rendered,
+            }))?
+        );
+        return Ok(0);
+    }
+
+    if plan.assignments.is_empty() {
+        println!("No entities to observe yet.");
+        return Ok(0);
+    }
+
+    println!(
+        "Peer assignment (revision {}, degree {})
+",
+        plan.revision, config.peer_monitoring.degree
+    );
+
+    let mut unwatched = Vec::new();
+    for assignment in &plan.assignments {
+        let target = name_of(assignment.target);
+        if assignment.observers.is_empty() {
+            unwatched.push(target);
+            continue;
+        }
+        let observers: Vec<String> = assignment
+            .observers
+            .iter()
+            .map(|o| format!("{} ({:?})", name_of(o.entity), o.role))
+            .collect();
+        println!("{target:<20} <- {}", observers.join(", "));
+    }
+
+    if !unwatched.is_empty() {
+        // Said plainly, because it is the reason a host will never be
+        // diagnosed as unreachable.
+        println!(
+            "\n{} entity/entities have no observer, so no reachability conclusion can be drawn about them:",
+            unwatched.len()
+        );
+        for target in unwatched {
+            println!("  {target}");
+        }
+        println!("\nGive hosts the `observer.peer` capability to fix this.");
+    }
+
+    Ok(0)
+}
+
 /// `sentinel diagnose`: explain what is wrong.
 pub async fn diagnose(cli: &Cli, json: bool) -> anyhow::Result<i32> {
     let config = Config::load(&cli.config)?;

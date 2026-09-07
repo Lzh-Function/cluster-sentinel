@@ -89,6 +89,12 @@ pub enum Command {
         #[command(subcommand)]
         command: DependencyCommand,
     },
+    /// Show who observes whom.
+    Peers {
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Explain what is currently wrong, and why.
     Diagnose {
         /// Emit JSON instead of text.
@@ -166,6 +172,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Discover { json } => run_cmd::discover(&cli, *json).await,
         Command::Entity { command } => run_cmd::entity(&cli, command).await,
         Command::Dependency { command } => run_cmd::dependency(&cli, command).await,
+        Command::Peers { json } => run_cmd::peers(&cli, *json).await,
         Command::Diagnose { json } => run_cmd::diagnose(&cli, *json).await,
         Command::Controller => daemon_cmd::controller(&cli).await,
         Command::Agent => daemon_cmd::agent(&cli).await,
@@ -269,6 +276,7 @@ mod tests {
             vec!["sentinel", "entity", "list", "--json"],
             vec!["sentinel", "dependency", "list", "--json"],
             vec!["sentinel", "diagnose", "--json"],
+            vec!["sentinel", "peers", "--json"],
             vec!["sentinel", "version", "--json"],
             vec!["sentinel", "config", "check", "--json"],
         ] {

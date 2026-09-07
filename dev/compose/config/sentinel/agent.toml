@@ -12,3 +12,9 @@ spool_path = "/var/lib/sentinel/spool.db"
 
 [database]
 path = "/var/lib/sentinel/agent.db"
+
+# Every host in the testbed is a peer observer. Capability, not role: this is
+# an explicit operator decision about what the host may do, and it is what
+# lets a path failure be told apart from a dead host (SPEC.md §45).
+[capabilities]
+"observer.peer" = "force"

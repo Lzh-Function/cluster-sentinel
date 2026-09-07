@@ -14,6 +14,7 @@
 //! daemon, and someone would spend an hour restarting a service on a machine
 //! that is not there.
 
+use crate::diagnosis::rules::reachability::verdicts_by_target;
 use crate::diagnosis::{kind, Confidence, Diagnosis, DiagnosisContext, DiagnosisRule, RuleId};
 use crate::entity::{EntityKey, EntityType};
 use crate::integrations::slurm::observe::{PROBE_CONTROLLER, PROBE_NODE};
@@ -138,6 +139,18 @@ impl DiagnosisRule for SlurmdServiceFailure {
             // up, "slurmd is dead" is a guess, and the more likely explanation
             // is that the whole host is gone.
             if !host_looks_healthy(context, host.id) {
+                continue;
+            }
+
+            // A second guard, for the case where the network between the
+            // scheduler and the node is itself in question. If observers
+            // disagree about reaching this host, some path is broken -- and a
+            // partition that cuts the controller off from a node also cuts
+            // slurmd off from slurmctld, which makes the node look
+            // unresponsive for a reason that has nothing to do with the
+            // daemon. Blaming slurmd here would send someone to restart a
+            // service that is running perfectly.
+            if verdicts_by_target(context).get(&host.id).is_some_and(|v| v.disagree()) {
                 continue;
             }
 
@@ -597,6 +610,42 @@ mod tests {
 
         let diagnoses = world.evaluate(&SlurmdServiceFailure);
         assert_eq!(diagnoses[0].suspected_root_entities, vec![World::host_id("node-a")]);
+    }
+
+    #[test]
+    fn a_contested_network_defers_to_the_path_diagnosis() {
+        // A partition between the controller and a node also cuts slurmd off
+        // from slurmctld, so the node looks unresponsive for a reason that has
+        // nothing to do with the daemon.
+        let mut world = World::new()
+            .with_host("node-a")
+            .healthy_host_evidence("node-a")
+            .slurm_node("node-a", ProbeStatus::Failed, not_responding());
+
+        // Two observers disagree about reaching the node.
+        for (observer, responded) in [("peer-a", true), ("peer-b", false)] {
+            world
+                .inventory
+                .insert_entity(ManagedEntity::new("lab", EntityType::Host, observer));
+            world.observations.insert(
+                Observation::new(
+                    ProbeId::new(crate::probes::network::PROBE_ID),
+                    World::host_id("node-a"),
+                    if responded {
+                        ProbeStatus::Ok
+                    } else {
+                        ProbeStatus::Timeout
+                    },
+                )
+                .with_observer(World::host_id(observer))
+                .with_payload(serde_json::json!({"host_responded": responded})),
+            );
+        }
+
+        assert!(
+            world.evaluate(&SlurmdServiceFailure).is_empty(),
+            "with the path in question, the daemon must not be blamed"
+        );
     }
 
     #[test]

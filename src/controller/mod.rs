@@ -11,22 +11,30 @@
 
 pub mod agents;
 pub mod api;
+mod assignments;
 mod diagnose;
 mod discovery;
 pub mod observer;
+pub mod peers;
 pub mod registration;
 mod server;
 
 pub use agents::{AgentRegistry, AgentSession, RegistrationKind};
 pub use discovery::{DiscoveryReport, ProviderReport};
 pub use observer::{endpoint_for, Endpoint, RemoteObserver};
+pub use peers::{assign, AssignmentPlan, Observer, ObserverRole, PeerAssignment};
+
+/// Re-export for integration tests that check capability gating.
+pub use peers::observer_candidates as observer_candidates_for_test;
 pub use registration::{snapshot_from_registration, Registration};
 pub use server::{serve, ServeOptions, ServerHandle};
 
 use std::sync::Arc;
 
+use crate::agent::SystemInspector;
 use crate::config::Config;
 use crate::diagnosis::{builtin_rules, DiagnosisEngine};
+use crate::entity::{EntityId, EntityKey, EntityType};
 use crate::integrations::slurm::{observe, ScontrolClient};
 use crate::inventory::slurm::SlurmInventoryProvider;
 use crate::inventory::static_config::StaticConfigProvider;
@@ -113,6 +121,17 @@ impl Controller {
     /// The scheduler entity name in force.
     pub fn scheduler_name(&self) -> String {
         scheduler_name(&self.config)
+    }
+
+    /// The entity the controller observes *as*.
+    ///
+    /// The controller is one viewpoint among several, and its observations have
+    /// to say so. An unsigned observation cannot take part in quorum, which
+    /// would leave the controller's own blind spots invisible to exactly the
+    /// reasoning designed to catch them (SPEC.md §50).
+    pub fn observer_entity(&self) -> Option<EntityId> {
+        let hostname = crate::agent::system::LinuxInspector::new().hostname()?;
+        Some(EntityKey::new(&self.config.environment, EntityType::Host, &hostname).entity_id())
     }
 }
 

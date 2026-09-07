@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::Path;
 use axum::extract::{Json, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -13,8 +14,9 @@ use axum::Router;
 use tokio::sync::Mutex;
 
 use crate::protocol::{
-    check_version, ClusterCredential, ErrorResponse, HealthResponse, HeartbeatRequest, HeartbeatResponse,
-    ObservationBatch, ObservationBatchResponse, RegisterRequest, RegisterResponse, API_PREFIX, AUTH_HEADER,
+    check_version, AssignmentsResponse, ClusterCredential, ErrorResponse, HealthResponse, HeartbeatRequest,
+    HeartbeatResponse, ObservationBatch, ObservationBatchResponse, RegisterRequest, RegisterResponse, API_PREFIX,
+    AUTH_HEADER,
 };
 use crate::time::now;
 use crate::PROTOCOL_VERSION;
@@ -45,6 +47,10 @@ pub fn router(state: ApiState) -> Router {
         .route(&format!("{API_PREFIX}/agents/register"), post(register))
         .route(&format!("{API_PREFIX}/agents/heartbeat"), post(heartbeat))
         .route(&format!("{API_PREFIX}/observations/batch"), post(observations))
+        .route(
+            &format!("{API_PREFIX}/agents/{{agent_id}}/assignments"),
+            get(assignments),
+        )
         .with_state(state)
 }
 
@@ -173,6 +179,46 @@ async fn observations(
     state.agents.lock().await.touch(batch.agent_id, now());
 
     Ok(Json(outcome))
+}
+
+async fn assignments(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<AssignmentsResponse>, ApiError> {
+    authenticate(&state, &headers)?;
+
+    let agent_id: uuid::Uuid = agent_id.parse().map_err(|_| {
+        ApiError(
+            StatusCode::BAD_REQUEST,
+            ErrorResponse::new("bad_agent_id", "not a valid agent id"),
+        )
+    })?;
+
+    // An agent that is not registered gets an empty plan rather than an error:
+    // it will re-register on its next heartbeat, and refusing here would put a
+    // scary line in its log for an ordinary startup race.
+    let observer = state.agents.lock().await.get(agent_id).map(|session| session.entity_id);
+
+    let controller = state.controller.lock().await;
+    let plan = controller
+        .assignment_plan()
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let targets = match observer {
+        Some(observer) => controller
+            .assigned_targets(&plan, observer)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?,
+        None => Vec::new(),
+    };
+
+    Ok(Json(AssignmentsResponse {
+        protocol_version: PROTOCOL_VERSION,
+        revision: plan.revision,
+        targets,
+    }))
 }
 
 #[cfg(test)]

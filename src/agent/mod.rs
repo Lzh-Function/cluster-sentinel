@@ -13,12 +13,14 @@
 pub mod client;
 pub mod discovery;
 pub mod local_probes;
+pub mod peer_probes;
 pub mod rpc;
 pub mod spool;
 pub mod system;
 
 pub use client::{ClientError, ControllerClient};
 pub use local_probes::LocalProbes;
+pub use peer_probes::PeerProbes;
 pub use spool::{Spool, SpoolLimits};
 pub use system::{LinuxInspector, SystemInspector};
 
@@ -107,6 +109,10 @@ pub struct Agent {
     registered_flag: Arc<std::sync::atomic::AtomicBool>,
     /// GPUs the probe has actually seen, if it has run.
     observed_gpu_count: Option<u64>,
+    /// Peers this agent observes on the controller's behalf.
+    peer_probes: PeerProbes,
+    /// When the assignment was last refreshed.
+    assignment_refreshed_at: Option<std::time::Instant>,
 }
 
 impl Agent {
@@ -150,7 +156,57 @@ impl Agent {
             started_at: std::time::Instant::now(),
             registered_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             observed_gpu_count: None,
+            peer_probes: PeerProbes::new(entity),
+            assignment_refreshed_at: None,
         })
+    }
+
+    /// The peers this agent observes.
+    pub fn peer_probes(&self) -> &PeerProbes {
+        &self.peer_probes
+    }
+
+    /// Fetch this agent's peer assignment from the controller.
+    ///
+    /// A failure here is not an error worth propagating: the agent keeps the
+    /// assignment it already has, which is far better than dropping peer
+    /// observation the moment the controller has a bad minute.
+    pub async fn refresh_assignments(&mut self) -> Result<usize, ClientError> {
+        let Some(agent_id) = self.status.agent_id else {
+            return Ok(0);
+        };
+
+        let response = self.client.assignments(agent_id).await?;
+        let count = response.targets.len();
+
+        if self.peer_probes.set_targets(response.revision, response.targets) {
+            tracing::info!(
+                revision = response.revision,
+                targets = count,
+                peers = ?self.peer_probes.target_names(),
+                "peer assignment updated"
+            );
+        }
+
+        self.assignment_refreshed_at = Some(std::time::Instant::now());
+        Ok(count)
+    }
+
+    /// Observe assigned peers and record what was seen.
+    pub async fn observe_peers(&mut self) -> anyhow::Result<usize> {
+        if self.peer_probes.is_empty() {
+            return Ok(0);
+        }
+        let observations = self.peer_probes.observe_all().await;
+        self.record_probe_results(observations).await
+    }
+
+    /// Whether the assignment is due to be refreshed.
+    fn assignment_is_stale(&self) -> bool {
+        match self.assignment_refreshed_at {
+            None => true,
+            Some(at) => at.elapsed() >= peer_probes::ASSIGNMENT_REFRESH,
+        }
     }
 
     /// GPUs this agent has observed, if the probe has run.
@@ -293,6 +349,8 @@ impl Agent {
                     capabilities = self.capabilities.len(),
                     "registered with controller"
                 );
+                // A fresh registration means the plan may have changed for us.
+                self.assignment_refreshed_at = None;
                 Ok(())
             }
             Err(error) => {
@@ -431,6 +489,17 @@ impl Agent {
                     // even in the turn where the controller is unreachable.
                     if let Err(error) = self.probe_once().await {
                         tracing::warn!(%error, "local probes failed");
+                    }
+                    if self.assignment_is_stale() {
+                        if let Err(error) = self.refresh_assignments().await {
+                            tracing::debug!(%error, "cannot refresh peer assignment; keeping the current one");
+                        }
+                    }
+                    // Peer observation continues on the assignment we already
+                    // have, even when the controller is unreachable. That is
+                    // precisely when a second viewpoint matters most.
+                    if let Err(error) = self.observe_peers().await {
+                        tracing::warn!(%error, "peer probes failed");
                     }
                     if let Err(error) = self.heartbeat().await {
                         tracing::debug!(%error, "heartbeat failed");

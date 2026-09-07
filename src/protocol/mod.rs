@@ -177,6 +177,33 @@ pub struct RejectedObservation {
     pub reason: String,
 }
 
+/// What one agent has been asked to observe (SPEC.md §45, §66).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssignmentsResponse {
+    /// Protocol version.
+    pub protocol_version: u32,
+    /// The plan revision, so an agent can tell its own is stale.
+    pub revision: u64,
+    /// The entities this agent should observe.
+    pub targets: Vec<AssignedTarget>,
+}
+
+/// One entity an agent should observe, and how to reach it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssignedTarget {
+    /// The entity's id.
+    pub entity_id: String,
+    /// Its canonical name, for logging.
+    pub name: String,
+    /// Where to reach it. Resolved by the controller from inventory, so an
+    /// agent never has to guess an address (SPEC.md §37).
+    pub address: String,
+    /// Probe parameters, including any non-default ports.
+    pub parameters: serde_json::Value,
+    /// The target's capabilities, which decide what to probe.
+    pub capabilities: CapabilitySet,
+}
+
 /// The controller's own health, for peers watching it (SPEC.md §109).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HealthResponse {
