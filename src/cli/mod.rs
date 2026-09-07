@@ -5,6 +5,7 @@
 
 mod config_cmd;
 mod daemon_cmd;
+mod install_cmd;
 mod run_cmd;
 mod status_cmd;
 mod version_cmd;
@@ -111,6 +112,17 @@ pub enum Command {
     Controller,
     /// Run the agent daemon.
     Agent,
+    /// Generate a systemd unit for a role.
+    Install {
+        /// `controller` or `agent`.
+        role: String,
+        /// Where to write the unit.
+        #[arg(long, default_value = "/etc/systemd/system")]
+        output_dir: PathBuf,
+        /// Print the unit instead of writing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Report what this host looks like to Sentinel, and why.
     Doctor {
         /// Emit JSON instead of text.
@@ -205,6 +217,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Diagnose { json } => run_cmd::diagnose(&cli, *json).await,
         Command::Controller => daemon_cmd::controller(&cli).await,
         Command::Agent => daemon_cmd::agent(&cli).await,
+        Command::Install {
+            role,
+            output_dir,
+            dry_run,
+        } => install_cmd::run(role, output_dir, &cli.config, *dry_run),
         Command::Doctor { json } => daemon_cmd::doctor(&cli, *json).await,
     }
 }
@@ -328,6 +345,18 @@ mod tests {
             Cli::try_parse_from(["sentinel", "doctor"]).expect("parse").command,
             Command::Doctor { json: false }
         ));
+    }
+
+    #[test]
+    fn install_parses() {
+        let cli = Cli::try_parse_from(["sentinel", "install", "agent", "--dry-run"]).expect("parse");
+        match cli.command {
+            Command::Install { role, dry_run, .. } => {
+                assert_eq!(role, "agent");
+                assert!(dry_run);
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
     }
 
     #[test]

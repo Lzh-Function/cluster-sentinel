@@ -14,6 +14,7 @@ pub mod api;
 mod assignments;
 mod diagnose;
 mod discovery;
+mod notify;
 pub mod observer;
 pub mod peers;
 pub mod registration;
@@ -21,6 +22,7 @@ mod server;
 
 pub use agents::{AgentRegistry, AgentSession, RegistrationKind};
 pub use discovery::{DiscoveryReport, ProviderReport};
+pub use notify::{min_severity, providers_from_config, NotifyOutcome};
 pub use observer::{endpoint_for, Endpoint, RemoteObserver};
 pub use peers::{assign, AssignmentPlan, Observer, ObserverRole, PeerAssignment};
 

@@ -5,6 +5,25 @@
 
 ## 未リリース
 
+### M10 — Notification / Operations
+
+* Notification は **変化があったときのみ** 送信する。
+  継続中の incident は何度 polling しても送信しない。
+  polling ごとの再通知は、監視を無視する習慣を作る。
+* 重複排除は宛先ごと・trigger ごと。
+  復旧通知が発生通知の重複として抑止されることはない。
+  controller と fallback notifier が同じ incident を見ても通知は 1 回。
+* 送信失敗は記録しないため、次回再試行される。
+* Maintenance window は **通知のみ** を抑止する。
+  observation・state・diagnosis は継続し、異常を healthy に書き換えない。
+  影響 entity が **すべて** 対象の場合のみ抑止する。
+* Webhook provider（ntfy / Gotify / Slack / Discord 等に POST 可能）。
+  payload は自己記述的で、受信側が Sentinel の内部を知る必要がない。
+* `sentinel install controller|agent` — hardening 済み systemd unit を生成。
+  credential は unit に書かず、ファイルを参照する。
+* `docs/OPERATIONS.md` を追加。段階的導入、診断結果の読み方、
+  トラブルシューティングを記載。
+
 ### M9 — Diagnosis / Incident Correlation
 
 * Incident engine。相関の原則は **「同じ症状」ではなく「同じ原因」**。

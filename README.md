@@ -43,7 +43,7 @@ out-of-band な証拠なしにこれを主張しません。
 | M7 | GPU | 完了 |
 | M8 | Peer monitoring | 完了 |
 | M9 | Diagnosis / incident correlation | 完了 |
-| M10 | Notification / operations | 未着手 |
+| M10 | Notification / operations | 完了 |
 
 ## ビルド
 
@@ -66,6 +66,7 @@ sentinel diagnose
 sentinel peers
 sentinel incident list
 sentinel incident show <id>
+sentinel install controller --dry-run
 ```
 
 いずれも `--json` を付ければ機械可読出力になります。
@@ -81,6 +82,8 @@ health check やスクリプトから利用できます。
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | コードの構成と、その理由 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 開発環境・テスト・疑似クラスタ |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | 設定リファレンス |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 導入・日常運用・トラブルシューティング |
+| [docs/SECURITY.md](docs/SECURITY.md) | 脅威モデルと保証範囲 |
 | [docs/adr/](docs/adr/) | 自明でなかった設計判断の記録 |
 
 ## ライセンス

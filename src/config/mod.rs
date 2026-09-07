@@ -105,6 +105,9 @@ pub struct Config {
     /// Integration toggles.
     #[serde(default)]
     pub discovery: DiscoveryConfig,
+    /// Notification destinations.
+    #[serde(default)]
+    pub notification: NotificationConfig,
 }
 
 fn default_environment() -> String {
@@ -124,6 +127,10 @@ impl Default for Config {
             entities: Vec::new(),
             dependencies: Vec::new(),
             discovery: DiscoveryConfig::default(),
+            notification: NotificationConfig {
+                webhooks: Vec::new(),
+                min_severity: default_min_severity(),
+            },
         }
     }
 }
@@ -290,6 +297,35 @@ impl Default for PeerMonitoringConfig {
             degree: default_peer_degree(),
         }
     }
+}
+
+/// Where notifications go.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationConfig {
+    /// Webhook destinations. Each is a separate deduplication scope, so
+    /// silencing one does not silence another.
+    #[serde(default)]
+    pub webhooks: Vec<WebhookConfig>,
+    /// Minimum severity worth sending.
+    #[serde(default = "default_min_severity")]
+    pub min_severity: String,
+}
+
+fn default_min_severity() -> String {
+    // Informational findings -- a drained node, a configuration mismatch --
+    // belong in `sentinel status`, not in someone's phone at 3am.
+    "warning".to_string()
+}
+
+/// One webhook destination.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookConfig {
+    /// A name for this destination, used in logs and for deduplication.
+    pub name: String,
+    /// Where to POST.
+    pub url: String,
 }
 
 /// Integration discovery toggles.
@@ -483,6 +519,37 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(config.controller.inventory_interval, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn notifications_default_to_nowhere_and_to_warning_and_above() {
+        // Sending nowhere by default is right: a monitoring system that starts
+        // paging an address the operator did not configure is worse than silent.
+        let config = Config::default();
+        assert!(config.notification.webhooks.is_empty());
+        assert_eq!(config.notification.min_severity, "warning");
+    }
+
+    #[test]
+    fn webhooks_parse() {
+        let config = Config::from_toml(
+            r#"
+            config_version = 1
+
+            [notification]
+            min_severity = "critical"
+
+            [[notification.webhooks]]
+            name = "ntfy"
+            url = "https://ntfy.example.org/cluster"
+            "#,
+            Path::new("test.toml"),
+        )
+        .expect("parse");
+
+        assert_eq!(config.notification.webhooks.len(), 1);
+        assert_eq!(config.notification.webhooks[0].name, "ntfy");
+        assert_eq!(config.notification.min_severity, "critical");
     }
 
     #[test]

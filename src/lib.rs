@@ -32,6 +32,7 @@ pub mod entity;
 pub mod incident;
 pub mod integrations;
 pub mod inventory;
+pub mod notification;
 pub mod observation;
 pub mod persistence;
 pub mod probes;
