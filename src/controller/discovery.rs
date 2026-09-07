@@ -51,6 +51,10 @@ pub struct DiscoveryReport {
     pub transitions: Vec<StateTransition>,
     /// Diagnoses drawn from the resulting picture.
     pub diagnoses: Vec<crate::diagnosis::Diagnosis>,
+    /// Incidents opened this cycle.
+    pub incidents_opened: usize,
+    /// Incidents resolved this cycle.
+    pub incidents_resolved: usize,
 }
 
 impl DiscoveryReport {
@@ -151,8 +155,12 @@ impl Controller {
             self.store().save_entity_state(state).await?;
         }
 
-        // Diagnosis runs last, over everything this cycle established.
-        report.diagnoses = self.diagnose_and_classify().await?;
+        // Diagnosis and correlation run last, over everything this cycle
+        // established.
+        let (diagnoses, incidents) = self.diagnose_and_correlate().await?;
+        report.diagnoses = diagnoses;
+        report.incidents_opened = incidents.opened.len();
+        report.incidents_resolved = incidents.resolved.len();
 
         Ok(report)
     }

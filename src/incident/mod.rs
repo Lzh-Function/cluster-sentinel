@@ -5,6 +5,10 @@
 //! because the root service came back — dependent clients must recover too
 //! (IMPLEMENTATION.md §75).
 
+mod engine;
+
+pub use engine::{fingerprint, severity_for, IncidentEngine, IncidentUpdate, REOPEN_WINDOW_MINUTES};
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -187,8 +191,31 @@ impl Incident {
         }
     }
 
-    /// Fold a diagnosis into the incident, merging its entities and evidence.
+    /// The most evidence one incident retains.
+    ///
+    /// Evidence accumulates while an incident is open, and a long-running one
+    /// would otherwise grow without bound. The **earliest** observations are
+    /// kept, because the ones from around the onset are what explain the cause;
+    /// the thousandth identical failure adds nothing a post-mortem needs
+    /// (SPEC.md §103, IMPLEMENTATION.md §55).
+    pub const MAX_EVIDENCE: usize = 200;
+
+    /// Fold a diagnosis into the incident, merging its entities and evidence,
+    /// and recording it on the timeline.
     pub fn add_diagnosis(&mut self, diagnosis: Diagnosis) {
+        self.timeline.push(TimelineEvent::new(
+            "diagnosis_added",
+            format!("{} ({})", diagnosis.diagnosis_type, diagnosis.confidence),
+        ));
+        self.merge_diagnosis(diagnosis);
+    }
+
+    /// Fold a diagnosis in **without** a timeline entry.
+    ///
+    /// For refreshing an unchanged incident: a timeline that gains a line every
+    /// polling interval buries the events that mattered under a transcript of
+    /// nothing happening.
+    pub fn merge_diagnosis(&mut self, diagnosis: Diagnosis) {
         for entity in &diagnosis.affected_entities {
             if !self.affected_entities.contains(entity) {
                 self.affected_entities.push(*entity);
@@ -200,14 +227,13 @@ impl Incident {
             }
         }
         for observation in &diagnosis.evidence {
+            if self.evidence.len() >= Self::MAX_EVIDENCE {
+                break;
+            }
             if !self.evidence.contains(observation) {
                 self.evidence.push(*observation);
             }
         }
-        self.timeline.push(TimelineEvent::new(
-            "diagnosis_added",
-            format!("{} ({})", diagnosis.diagnosis_type, diagnosis.confidence),
-        ));
         self.diagnoses.push(diagnosis);
     }
 
@@ -314,6 +340,51 @@ mod tests {
         assert_eq!(incident.evidence, vec![observation], "evidence must be deduplicated");
         assert!(incident.has_diagnosis(kind::SHARED_STORAGE_FAILURE));
         assert_eq!(incident.diagnoses.len(), 2);
+    }
+
+    #[test]
+    fn refreshing_an_incident_does_not_grow_its_timeline() {
+        // A timeline that gains a line every ten seconds buries the events
+        // that mattered under a transcript of nothing happening.
+        let mut incident = Incident::open("test", Severity::Warning);
+        let diagnosis = Diagnosis::new(kind::NFS_SERVICE_FAILURE, "nfs.server", Confidence::High);
+
+        incident.add_diagnosis(diagnosis.clone());
+        let after_first = incident.timeline.len();
+
+        for _ in 0..10 {
+            incident.merge_diagnosis(diagnosis.clone());
+        }
+        assert_eq!(incident.timeline.len(), after_first);
+    }
+
+    #[test]
+    fn evidence_is_capped_so_a_long_incident_does_not_grow_without_bound() {
+        let mut incident = Incident::open("test", Severity::Warning);
+        let first = ObservationId::new();
+
+        for _ in 0..(Incident::MAX_EVIDENCE * 2) {
+            incident.merge_diagnosis(
+                Diagnosis::new(kind::NFS_SERVICE_FAILURE, "nfs.server", Confidence::High)
+                    .with_evidence([ObservationId::new()]),
+            );
+        }
+
+        assert_eq!(incident.evidence.len(), Incident::MAX_EVIDENCE);
+
+        // The earliest evidence is what explains the onset, so it is what is
+        // kept.
+        let mut fresh = Incident::open("test", Severity::Warning);
+        fresh.merge_diagnosis(
+            Diagnosis::new(kind::NFS_SERVICE_FAILURE, "nfs.server", Confidence::High).with_evidence([first]),
+        );
+        for _ in 0..(Incident::MAX_EVIDENCE * 2) {
+            fresh.merge_diagnosis(
+                Diagnosis::new(kind::NFS_SERVICE_FAILURE, "nfs.server", Confidence::High)
+                    .with_evidence([ObservationId::new()]),
+            );
+        }
+        assert_eq!(fresh.evidence.first(), Some(&first), "onset evidence must survive");
     }
 
     #[test]

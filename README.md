@@ -42,7 +42,7 @@ out-of-band な証拠なしにこれを主張しません。
 | M6 | Storage / NFS | 完了 |
 | M7 | GPU | 完了 |
 | M8 | Peer monitoring | 完了 |
-| M9 | Diagnosis / incident correlation | 未着手 |
+| M9 | Diagnosis / incident correlation | 完了 |
 | M10 | Notification / operations | 未着手 |
 
 ## ビルド
@@ -64,6 +64,8 @@ sentinel entity show <name>
 sentinel dependency list
 sentinel diagnose
 sentinel peers
+sentinel incident list
+sentinel incident show <id>
 ```
 
 いずれも `--json` を付ければ機械可読出力になります。

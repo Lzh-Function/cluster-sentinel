@@ -89,6 +89,12 @@ pub enum Command {
         #[command(subcommand)]
         command: DependencyCommand,
     },
+    /// Inspect incidents.
+    Incident {
+        /// The incident subcommand.
+        #[command(subcommand)]
+        command: IncidentCommand,
+    },
     /// Show who observes whom.
     Peers {
         /// Emit JSON instead of text.
@@ -135,6 +141,28 @@ pub enum EntityCommand {
     },
 }
 
+/// `sentinel incident ...`.
+#[derive(Debug, Subcommand)]
+pub enum IncidentCommand {
+    /// List incidents.
+    List {
+        /// Include resolved incidents as well as active ones.
+        #[arg(long)]
+        all: bool,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one incident in full, with its timeline and evidence.
+    Show {
+        /// Incident id.
+        id: String,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 /// `sentinel dependency ...`.
 #[derive(Debug, Subcommand)]
 pub enum DependencyCommand {
@@ -172,6 +200,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Discover { json } => run_cmd::discover(&cli, *json).await,
         Command::Entity { command } => run_cmd::entity(&cli, command).await,
         Command::Dependency { command } => run_cmd::dependency(&cli, command).await,
+        Command::Incident { command } => run_cmd::incident(&cli, command).await,
         Command::Peers { json } => run_cmd::peers(&cli, *json).await,
         Command::Diagnose { json } => run_cmd::diagnose(&cli, *json).await,
         Command::Controller => daemon_cmd::controller(&cli).await,
@@ -277,6 +306,7 @@ mod tests {
             vec!["sentinel", "dependency", "list", "--json"],
             vec!["sentinel", "diagnose", "--json"],
             vec!["sentinel", "peers", "--json"],
+            vec!["sentinel", "incident", "list", "--json"],
             vec!["sentinel", "version", "--json"],
             vec!["sentinel", "config", "check", "--json"],
         ] {

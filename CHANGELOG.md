@@ -5,6 +5,26 @@
 
 ## 未リリース
 
+### M9 — Diagnosis / Incident Correlation
+
+* Incident engine。相関の原則は **「同じ症状」ではなく「同じ原因」**。
+  fingerprint を suspected root entity から導出するため、
+  1 つの fileserver に起因する複数の症状が 1 incident にまとまる。
+  無関係な障害が同時刻に起きても統合されない。
+* Dependency fan-out による severity 決定（`SPEC.md` §101）。
+  3 台以上が依存する対象の障害は critical。
+  低 confidence の推測は fan-out によらず critical にしない。
+* Lifecycle: root が復旧しても依存先が未復旧なら `RECOVERING` に留まり、
+  `RESOLVED` にしない（`IMPLEMENTATION.md` §75）。
+* 再発は 30 分以内なら同一 incident を reopen し、
+  flapping で毎回新規 alert を出さない。
+* Incident・diagnosis・evidence・timeline の永続化。
+  controller 再起動時は open な incident を再開し、再 alert しない。
+* timeline は「変化」のみ記録する。polling ごとに 1 行増えると
+  重要な出来事が埋もれるため。
+* evidence は上限付き。発生時点のものを優先して保持する。
+* `sentinel incident list` / `sentinel incident show` を追加。
+
 ### M8 — Peer Monitoring
 
 * Peer assignment（`SPEC.md` §46-§49）。

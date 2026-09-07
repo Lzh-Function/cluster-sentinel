@@ -5,10 +5,11 @@
 //! a diagnosis reproducible: the same stored evidence always yields the same
 //! answer, and an operator can re-run it later and check.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::diagnosis::{Diagnosis, DiagnosisContext, ObservationIndex};
 use crate::entity::EntityId;
+use crate::incident::IncidentUpdate;
 use crate::persistence::StoreError;
 use crate::state::EntityState;
 
@@ -85,6 +86,26 @@ impl Controller {
         }
 
         Ok(diagnoses)
+    }
+
+    /// Diagnose, classify, then fold the result into incidents.
+    ///
+    /// The order matters: incidents are built from diagnoses, and diagnoses
+    /// from state, so each stage sees a settled picture from the one before.
+    pub async fn diagnose_and_correlate(&mut self) -> Result<(Vec<Diagnosis>, IncidentUpdate), StoreError> {
+        let diagnoses = self.diagnose_and_classify().await?;
+
+        let environment = self.config().environment.clone();
+        let inventory = self.store().load_inventory(&environment).await?;
+        let states: BTreeMap<EntityId, EntityState> = self.engine().states().map(|s| (s.entity, s.clone())).collect();
+
+        let update = self.incidents.reconcile(&diagnoses, inventory.graph(), &states);
+
+        for incident in update.all() {
+            self.store().save_incident(&environment, incident).await?;
+        }
+
+        Ok((diagnoses, update))
     }
 }
 

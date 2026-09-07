@@ -35,6 +35,7 @@ use crate::agent::SystemInspector;
 use crate::config::Config;
 use crate::diagnosis::{builtin_rules, DiagnosisEngine};
 use crate::entity::{EntityId, EntityKey, EntityType};
+use crate::incident::IncidentEngine;
 use crate::integrations::slurm::{observe, ScontrolClient};
 use crate::inventory::slurm::SlurmInventoryProvider;
 use crate::inventory::static_config::StaticConfigProvider;
@@ -53,6 +54,7 @@ pub struct Controller {
     providers: Vec<Arc<dyn InventoryProvider>>,
     engine: StateEngine,
     diagnosis: DiagnosisEngine,
+    incidents: IncidentEngine,
 }
 
 impl Controller {
@@ -79,13 +81,24 @@ impl Controller {
             engine.seed(state);
         }
 
+        // Resume the incidents that were already open, so a restart does not
+        // re-alert on everything the operator is already dealing with.
+        let mut incidents = IncidentEngine::new();
+        incidents.seed(store.load_active_incidents(&config.environment).await?);
+
         Ok(Self {
             config,
             store,
             providers,
             engine,
             diagnosis: builtin_rules(),
+            incidents,
         })
+    }
+
+    /// The incident engine.
+    pub fn incident_engine(&self) -> &IncidentEngine {
+        &self.incidents
     }
 
     /// The diagnosis engine.

@@ -5,6 +5,7 @@
 //! implementation rather than a rewrite (SPEC.md §125).
 
 mod entities;
+mod incidents;
 mod observations;
 mod sqlite;
 

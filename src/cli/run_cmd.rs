@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::controller::Controller;
 use crate::persistence::SqliteStore;
 
-use super::{status_cmd, Cli, DependencyCommand, EntityCommand};
+use super::{status_cmd, Cli, DependencyCommand, EntityCommand, IncidentCommand};
 use crate::diagnosis::Diagnosis;
 
 /// Open the configured database, applying migrations.
@@ -81,6 +81,151 @@ pub async fn discover(cli: &Cli, json: bool) -> anyhow::Result<i32> {
     // A provider failing is worth a non-zero exit: discovery ran, but the
     // picture is incomplete and a caller should know.
     Ok(if report.all_providers_ok() { 0 } else { 1 })
+}
+
+/// `sentinel incident ...`.
+pub async fn incident(cli: &Cli, command: &IncidentCommand) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let inventory = store.load_inventory(&config.environment).await?;
+
+    let name_of = |id: crate::entity::EntityId| {
+        inventory
+            .get(id)
+            .map(|e| format!("{}/{}", e.entity_type, e.canonical_name))
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    match command {
+        IncidentCommand::List { all, json } => {
+            let incidents = if *all {
+                store.load_incidents(&config.environment, 200).await?
+            } else {
+                store.load_active_incidents(&config.environment).await?
+            };
+
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&incidents)?);
+                return Ok(if incidents.is_empty() { 0 } else { 2 });
+            }
+
+            if incidents.is_empty() {
+                println!("No {}incidents.", if *all { "" } else { "active " });
+                return Ok(0);
+            }
+
+            for incident in &incidents {
+                let cause = if incident.suspected_root_entities.is_empty() {
+                    "(unattributed)".to_string()
+                } else {
+                    incident
+                        .suspected_root_entities
+                        .iter()
+                        .map(|id| name_of(*id))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                println!(
+                    "{:<38} {:<9} {:<11} {}",
+                    incident.id,
+                    incident.severity.to_string().to_uppercase(),
+                    incident.status,
+                    cause
+                );
+                if let Some(diagnosis) = incident.primary_diagnosis() {
+                    println!("{:<38} {}", "", diagnosis.summary);
+                }
+            }
+
+            Ok(if incidents.iter().any(|i| i.status.is_active()) {
+                2
+            } else {
+                0
+            })
+        }
+        IncidentCommand::Show { id, json } => {
+            let Some(incident) = store.load_incident(id).await? else {
+                eprintln!("error: no incident with id {id}");
+                return Ok(1);
+            };
+
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&incident)?);
+                return Ok(0);
+            }
+
+            println!("Incident:  {}", incident.id);
+            println!("Status:    {}", incident.status);
+            println!("Severity:  {}", incident.severity.to_string().to_uppercase());
+            println!("Started:   {}", crate::time::to_rfc3339(incident.started_at));
+            if let Some(ended_at) = incident.ended_at {
+                println!("Ended:     {}", crate::time::to_rfc3339(ended_at));
+            }
+            println!("Duration:  {}", format_duration(incident.duration()));
+
+            if !incident.suspected_root_entities.is_empty() {
+                println!(
+                    "\nSuspected cause:\n  {}",
+                    incident
+                        .suspected_root_entities
+                        .iter()
+                        .map(|id| name_of(*id))
+                        .collect::<Vec<_>>()
+                        .join("\n  ")
+                );
+            }
+            if !incident.affected_entities.is_empty() {
+                println!(
+                    "\nAffected:\n  {}",
+                    incident
+                        .affected_entities
+                        .iter()
+                        .map(|id| name_of(*id))
+                        .collect::<Vec<_>>()
+                        .join("\n  ")
+                );
+            }
+
+            println!("\nDiagnoses:");
+            for diagnosis in &incident.diagnoses {
+                println!("  {} [{}]", diagnosis.diagnosis_type, diagnosis.confidence);
+                println!("    {}", diagnosis.summary);
+                println!("    rule: {}", diagnosis.rule_id);
+                if !diagnosis.recommended_actions.is_empty() {
+                    println!("    suggested investigation (read-only):");
+                    for action in &diagnosis.recommended_actions {
+                        println!("      {action}");
+                    }
+                }
+            }
+
+            println!("\nTimeline:");
+            for event in &incident.timeline {
+                println!(
+                    "  {}  {:<20} {}",
+                    crate::time::to_rfc3339(event.at),
+                    event.kind,
+                    event.detail
+                );
+            }
+
+            // The evidence is the point: an incident an operator cannot check
+            // is an assertion (SPEC.md §103).
+            println!("\nEvidence: {} observation(s) preserved", incident.evidence.len());
+
+            Ok(0)
+        }
+    }
+}
+
+/// Render a duration the way an operator reads one.
+fn format_duration(duration: chrono::Duration) -> String {
+    let seconds = duration.num_seconds().max(0);
+    match seconds {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m {}s", s / 60, s % 60),
+        s => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+    }
 }
 
 /// `sentinel peers`: show who observes whom.
