@@ -52,6 +52,41 @@ Slurm・NFS・NVIDIA が core へ到達する経路は以下のみです。
 これが SPEC.md §146（NFS から CephFS への置換）を、書き直しではなく
 設定変更にしている理由です。
 
+## リポジトリ構成
+
+```text
+src/
+  entity/         ManagedEntity と identity
+  capability/     Capability とその解決
+  dependency/     有向グラフと cycle-safe traversal
+  observation/    immutable な probe 結果
+  state/          導出された health、debounce、state engine
+  diagnosis/      rule engine と rule 群
+  incident/       correlation と lifecycle
+  ─────────────── 以上が core。integration へ依存しない
+  probes/         Probe interface と実装
+  inventory/      InventoryProvider と merge
+  integrations/   技術固有の知識（Slurm 等）
+  agent/          agent daemon、local/peer probe、spool、RPC
+  controller/     controller、API、observer、peer assignment
+  protocol/       wire protocol
+  command/        外部コマンド実行（timeout / allowlist）
+  persistence/    SQLite repository
+  notification/   通知、重複排除、maintenance
+  config/         設定、優先順位、検証
+  cli/            サブコマンド
+```
+
+`SPEC.md` §183 の推奨構成からの意図的な差異が 1 点あります。
+
+**`integrations/` を追加してあります。**
+推奨構成は `inventory/slurm/` と `probes/slurm/` の双方を挙げていますが、
+`scontrol` の出力をどう解釈するかという知識は 1 箇所にあるべきです。
+`integrations/slurm/` がその知識を持ち、
+`inventory/` と `probes/` は core 向けの trait と薄い adapter を持ちます。
+
+この配置は依存方向を変えません。core は依然として integration へ依存しません。
+
 ## Identity
 
 Entity の natural key は `(environment, entity_type, canonical_name)` です。

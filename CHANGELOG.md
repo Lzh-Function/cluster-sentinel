@@ -5,6 +5,23 @@
 
 ## 未リリース
 
+M0-M10（core scope）完了。
+CLI からクラスタ状態と障害原因を説明できる状態です。
+
+`IMPLEMENTATION.md` §97 の v1 受け入れ手順を
+`dev/compose/scripts/acceptance` として自動化しており、
+Docker 疑似クラスタに対して 23 項目すべてが通ります。
+
+### 横断的な事項
+
+* v1 受け入れ手順の自動化（23 項目）。
+  各段階で 1 つだけを壊し、それを指すことと **他を指さないこと** を検査する。
+* `SENTINEL_AGENT_FAILURE` / `SSH_SERVICE_FAILURE` rule。
+  いずれも「host が別経路で応答している」積極的証拠を要求する。
+* CI 設定。fmt / clippy / test / release build は Docker 不要。
+  疑似クラスタは別 job。
+* `docs/VM_VALIDATION.md`。Docker で検証 **できない** 項目の一覧。
+
 ### M10 — Notification / Operations
 
 * Notification は **変化があったときのみ** 送信する。
