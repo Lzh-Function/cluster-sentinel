@@ -87,7 +87,23 @@ SENTINEL_DOCKER_TESTS=1 cargo test --test m3_pseudo_cluster -- --test-threads=1
 * IPMI / BMC、物理電源断
 
 これらは level 4 の責務であり、コンテナで近似するのではなく
-VM テスト要件として記録します。
+VM テスト要件として記録します。詳細は
+[VM_VALIDATION.md](VM_VALIDATION.md) を参照してください。
+
+## v1 受け入れテスト
+
+`docs/IMPLEMENTATION.md` §97 の 18 段階を自動化してあります。
+
+```bash
+cd dev/compose
+./scripts/acceptance
+```
+
+各段階で 1 つだけを既知の方法で壊し、Sentinel が
+**それを** 指すこと、および **他のものを指さないこと** を検査します。
+否定側の検査が同じくらい重要です —
+停止した daemon に対して `HOST_UNREACHABLE` と言う監視は、
+何も言わない監視より有害だからです。
 
 ## リポジトリ構成
 

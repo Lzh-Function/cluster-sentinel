@@ -29,7 +29,15 @@ out-of-band な証拠なしにこれを主張しません。
 
 ## 現在の状況
 
-[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) §94 の milestone 順に構築中です。
+M0-M10（core scope）が完了しています。
+CLI から、クラスタの状態と障害原因を説明できる状態です。
+
+`docs/IMPLEMENTATION.md` §97 の v1 受け入れ手順を自動化してあり、
+Docker 疑似クラスタに対して 23 項目すべてが通ります。
+
+```bash
+cd dev/compose && ./scripts/acceptance
+```
 
 | Milestone | 範囲 | 状態 |
 | --- | --- | --- |
@@ -44,6 +52,8 @@ out-of-band な証拠なしにこれを主張しません。
 | M8 | Peer monitoring | 完了 |
 | M9 | Diagnosis / incident correlation | 完了 |
 | M10 | Notification / operations | 完了 |
+| M11 | VM / 実機検証 | 要件を [docs/VM_VALIDATION.md](docs/VM_VALIDATION.md) に記録（未実施）|
+| M12 | Web UI | 未着手（core 完成後の予定）|
 
 ## ビルド
 
@@ -84,6 +94,7 @@ health check やスクリプトから利用できます。
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | 設定リファレンス |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | 導入・日常運用・トラブルシューティング |
 | [docs/SECURITY.md](docs/SECURITY.md) | 脅威モデルと保証範囲 |
+| [docs/VM_VALIDATION.md](docs/VM_VALIDATION.md) | Docker では検証できない項目の一覧 |
 | [docs/adr/](docs/adr/) | 自明でなかった設計判断の記録 |
 
 ## ライセンス

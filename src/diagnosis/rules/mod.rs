@@ -4,6 +4,7 @@
 //! be justified from stored observations does not belong here.
 
 pub mod reachability;
+pub mod services;
 pub mod slurm;
 pub mod storage;
 
@@ -14,6 +15,8 @@ pub fn builtin() -> Vec<Box<dyn DiagnosisRule>> {
     vec![
         Box::new(reachability::HostUnreachable),
         Box::new(reachability::PathSpecificNetworkFailure),
+        Box::new(services::SentinelAgentFailure),
+        Box::new(services::SshServiceFailure),
         Box::new(slurm::SlurmOnlyDegradation),
         Box::new(slurm::SlurmdServiceFailure),
         Box::new(slurm::SlurmControlPlaneFailure),
