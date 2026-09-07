@@ -185,6 +185,15 @@ pub struct ControllerConfig {
     /// How often inventory discovery runs.
     #[serde(default = "default_inventory_interval", with = "humantime_serde")]
     pub inventory_interval: Duration,
+    /// How often diagnosis, correlation and notification run.
+    ///
+    /// Separate from `inventory_interval`, and much shorter, because the two
+    /// have opposite costs. Discovery shells out to `scontrol` and probes every
+    /// host, so it wants to be infrequent. Diagnosis only reads what is already
+    /// stored, so it can run often — and it decides how long a fault waits
+    /// before anyone is told about it.
+    #[serde(default = "default_diagnosis_interval", with = "humantime_serde")]
+    pub diagnosis_interval: Duration,
     /// Whether the controller itself probes entities remotely.
     ///
     /// On by default: the controller is usually a useful vantage point, and in
@@ -208,11 +217,18 @@ fn default_inventory_interval() -> Duration {
     Duration::from_secs(300)
 }
 
+fn default_diagnosis_interval() -> Duration {
+    // Short enough that a fault is reported in the same minute it happens,
+    // long enough that a flapping probe does not thrash the incident engine.
+    Duration::from_secs(15)
+}
+
 impl Default for ControllerConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
             inventory_interval: default_inventory_interval(),
+            diagnosis_interval: default_diagnosis_interval(),
             observe: default_observe(),
         }
     }
@@ -570,6 +586,20 @@ mod tests {
     fn no_controller_host_is_baked_into_the_defaults() {
         let config = Config::default();
         assert_eq!(config.agent.controller_address, None);
+    }
+
+    #[test]
+    fn diagnosis_runs_far_more_often_than_discovery() {
+        // Discovery is expensive and can wait; diagnosis decides how long a
+        // fault goes unreported, and must not inherit discovery's cadence.
+        let config = Config::default();
+        assert!(
+            config.controller.diagnosis_interval < config.controller.inventory_interval,
+            "{:?} vs {:?}",
+            config.controller.diagnosis_interval,
+            config.controller.inventory_interval
+        );
+        assert!(config.controller.diagnosis_interval <= Duration::from_secs(30));
     }
 
     #[test]

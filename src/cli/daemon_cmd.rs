@@ -89,6 +89,7 @@ pub async fn controller(cli: &Cli) -> anyhow::Result<i32> {
     let store = SqliteStore::open(&config.database.path).await?;
     let listen = config.controller.listen.clone();
     let discovery_interval = config.controller.inventory_interval;
+    let diagnosis_interval = config.controller.diagnosis_interval;
     let controller = Controller::new(config, store.clone()).await?;
 
     let handle = serve(
@@ -98,6 +99,7 @@ pub async fn controller(cli: &Cli) -> anyhow::Result<i32> {
             credential,
             heartbeat_interval: HEARTBEAT_INTERVAL,
             discovery_interval: Some(discovery_interval),
+            diagnosis_interval: Some(diagnosis_interval),
         },
     )
     .await?;

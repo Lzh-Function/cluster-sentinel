@@ -8,6 +8,7 @@
 
 pub mod gpu;
 pub mod host;
+pub mod journal;
 pub mod network;
 pub mod nfs;
 mod runner;

@@ -1,9 +1,18 @@
 //! Running the controller as a daemon.
 //!
-//! Two things run concurrently: the HTTP API agents talk to, and a periodic
-//! discovery cycle. Either can fail without stopping the other — a Slurm
-//! outage must not take the API down, and an API error must not stop
-//! discovery.
+//! Three things run concurrently, and any of them can fail without stopping
+//! the others — a Slurm outage must not take the API down, and a failed
+//! diagnosis pass must not stop observations arriving:
+//!
+//! | Loop | Cadence | Cost |
+//! | --- | --- | --- |
+//! | HTTP API | continuous | agents push observations here |
+//! | Inventory discovery | minutes | shells out to `scontrol`, probes every host |
+//! | Diagnosis and notification | seconds | reads only what is already stored |
+//!
+//! The last two are separate on purpose. Sharing discovery's cadence would
+//! mean a fault waits for the next inventory sweep before anyone is told, and
+//! inventory sweeps are expensive enough to want to be rare.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -11,6 +20,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+use crate::notification::{Deduplicator, MaintenanceWindows, NotificationProvider};
 use crate::protocol::ClusterCredential;
 
 use super::agents::AgentRegistry;
@@ -25,15 +35,16 @@ pub struct ServerHandle {
     shutdown: tokio::sync::oneshot::Sender<()>,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
     discovery: Option<tokio::task::JoinHandle<()>>,
+    diagnosis: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ServerHandle {
     /// Ask the server to stop and wait for it (SPEC.md §84).
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
-        if let Some(discovery) = self.discovery {
-            discovery.abort();
-            let _ = discovery.await;
+        for task in [self.discovery, self.diagnosis].into_iter().flatten() {
+            task.abort();
+            let _ = task.await;
         }
         let _ = self.server.await;
     }
@@ -49,11 +60,20 @@ pub struct ServeOptions {
     pub heartbeat_interval: std::time::Duration,
     /// How often to run inventory discovery; `None` disables the loop.
     pub discovery_interval: Option<std::time::Duration>,
+    /// How often to diagnose, correlate and notify; `None` disables the loop.
+    pub diagnosis_interval: Option<std::time::Duration>,
 }
 
 /// Start the controller's API, and its discovery loop if one is configured.
 pub async fn serve(controller: Controller, options: ServeOptions) -> anyhow::Result<ServerHandle> {
     let discovery_interval = options.discovery_interval;
+    let diagnosis_interval = options.diagnosis_interval;
+
+    let providers: Vec<Arc<dyn NotificationProvider>> = super::providers_from_config(controller.config());
+    if !providers.is_empty() {
+        tracing::info!(destinations = providers.len(), "notifications enabled");
+    }
+
     let controller = Arc::new(Mutex::new(controller));
 
     let state = ApiState {
@@ -81,15 +101,82 @@ pub async fn serve(controller: Controller, options: ServeOptions) -> anyhow::Res
         tokio::spawn(async move { discovery_loop(controller, interval).await })
     });
 
+    // Diagnosis on its own, much shorter, cadence. Sharing discovery's would
+    // mean a fault waits for the next inventory sweep before anyone is told.
+    let diagnosis = diagnosis_interval.map(|interval| {
+        let controller = Arc::clone(&controller);
+        let providers = providers.clone();
+        tokio::spawn(async move { diagnosis_loop(controller, interval, providers).await })
+    });
+
     Ok(ServerHandle {
         local_addr,
         shutdown: shutdown_tx,
         server,
         discovery,
+        diagnosis,
     })
 }
 
-/// Run discovery on a schedule.
+/// Diagnose, correlate and notify on a schedule.
+///
+/// Reads only what is already stored, so it is cheap enough to run often. This
+/// interval is what decides how long a fault goes unreported.
+async fn diagnosis_loop(
+    controller: Arc<Mutex<Controller>>,
+    interval: std::time::Duration,
+    providers: Vec<Arc<dyn NotificationProvider>>,
+) {
+    // Notification state lives with the loop: the deduplicator remembers what
+    // has already been said, so a still-open incident stays quiet.
+    let mut deduplicator = Deduplicator::new();
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        ticker.tick().await;
+
+        let mut controller = controller.lock().await;
+        let update = match controller.diagnose_and_correlate().await {
+            Ok((diagnoses, update)) => {
+                if !update.is_empty() {
+                    tracing::debug!(
+                        diagnoses = diagnoses.len(),
+                        opened = update.opened.len(),
+                        resolved = update.resolved.len(),
+                        "incidents reconciled"
+                    );
+                }
+                update
+            }
+            // A failed pass must never end the loop: the next one may succeed,
+            // and a monitor that gives up during an outage is useless.
+            Err(error) => {
+                tracing::error!(%error, "diagnosis pass failed");
+                continue;
+            }
+        };
+
+        if providers.is_empty() {
+            continue;
+        }
+
+        let maintenance = MaintenanceWindows::new();
+        match controller
+            .notify(&update, &providers, &mut deduplicator, &maintenance)
+            .await
+        {
+            Ok(outcome) if outcome.sent > 0 => {
+                tracing::info!(sent = outcome.sent, failed = outcome.failed, "notifications delivered");
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "notification pass failed"),
+        }
+        deduplicator.prune();
+    }
+}
+
+/// Run inventory discovery on a schedule.
 async fn discovery_loop(controller: Arc<Mutex<Controller>>, interval: std::time::Duration) {
     // Jitter so a fleet of controllers, or a controller restarted in lockstep
     // with others, does not synchronise its load (SPEC.md §123).
@@ -164,6 +251,7 @@ mod tests {
                 credential: ClusterCredential::new(TOKEN),
                 heartbeat_interval: std::time::Duration::from_secs(5),
                 discovery_interval,
+                diagnosis_interval: None,
             },
         )
         .await

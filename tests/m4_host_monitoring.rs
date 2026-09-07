@@ -309,6 +309,7 @@ async fn the_agent_probes_its_own_host_and_the_observations_reach_the_controller
             credential: ClusterCredential::new(TOKEN),
             heartbeat_interval: Duration::from_secs(5),
             discovery_interval: None,
+            diagnosis_interval: None,
         },
     )
     .await

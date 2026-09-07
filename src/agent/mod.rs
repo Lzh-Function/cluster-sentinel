@@ -49,6 +49,19 @@ fn schedule_accelerator_probes(local: &mut LocalProbes) {
     );
 }
 
+/// Schedule continuous collection of kernel and service events.
+///
+/// Continuous rather than on demand, because the moment the logs matter most
+/// is the moment the host is least able to hand them over. By the time an
+/// operator comes to look, the evidence is already at the controller
+/// (SPEC.md §1, §83).
+fn schedule_journal_probes(local: &mut LocalProbes) {
+    local.add(
+        Arc::new(crate::probes::journal::JournalProbe::new()),
+        serde_json::Value::Null,
+    );
+}
+
 fn schedule_storage_probes(local: &mut LocalProbes, inspector: &dyn SystemInspector) {
     use crate::probes::nfs::{NfsClientIoProbe, NfsMountProbe};
 
@@ -146,6 +159,7 @@ impl Agent {
         let mut local_probes = LocalProbes::new(entity, capabilities.clone());
         schedule_storage_probes(&mut local_probes, inspector.as_ref());
         schedule_accelerator_probes(&mut local_probes);
+        schedule_journal_probes(&mut local_probes);
 
         Ok(Self {
             environment: config.environment.clone(),

@@ -151,6 +151,34 @@ dev/compose/    Docker 疑似クラスタ（M3 以降）
 | `nfs.server.port` | export port の応答 | `storage.nfs.server` | local / remote |
 | `nfs.server.exports` | export 一覧 | `storage.nfs.server` | local |
 | `gpu.nvidia` | GPU 一覧・温度・メモリ | `gpu.nvidia` | local |
+| `journal.events` | kernel / service event | `journal.read` | local（**同時 1**） |
+
+### journal probe
+
+kernel event（OOM / I/O error / hung task / NVMe timeout / GPU Xid /
+MCE / NFS server not responding / link down / thermal）を継続的に収集します。
+
+**on-demand ではなく継続収集** である理由は、
+ログが最も必要な瞬間は host が最もそれを渡せない瞬間だからです
+（`SPEC.md` §1「reboot 後に原因情報が失われる」）。
+運用者が見に行く時点では、証拠はすでに controller にあります。
+
+query は 4 方向すべてで制限されています（`IMPLEMENTATION.md` §52）。
+
+| 制限 | 値 |
+| --- | --- |
+| 時間 | 前回 scan 以降、最大 15 分 |
+| priority | warning 以上 |
+| 行数 | 500 |
+| バイト数 | 1 MiB |
+
+matched event は **事実として記録するだけ** で、診断結果とは等価に扱いません
+（`SPEC.md` §83）。compute node での OOM kill は多くの場合、
+job が想定どおりに動いた結果です。
+
+container には systemd が無いため、
+Docker 疑似クラスタでは `journal.read` が検出されず probe は動きません。
+実 systemd 環境での検証は level 4 です。
 
 ### NFS probe の安全性
 

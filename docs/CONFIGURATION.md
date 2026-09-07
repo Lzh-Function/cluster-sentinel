@@ -72,7 +72,12 @@ enabled = true
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
 | `listen` | `host:port` | `0.0.0.0:7443` | controller の待受アドレス |
-| `inventory_interval` | duration | `5m` | inventory discovery の実行間隔 |
+| `inventory_interval` | duration | `5m` | inventory discovery の実行間隔（`scontrol` 実行・全 host probe を伴う） |
+| `diagnosis_interval` | duration | `15s` | 診断・相関・通知の実行間隔 |
+
+`diagnosis_interval` は **障害発生から通知までの遅延を決める値**です。
+保存済みデータを読むだけなので安価であり、
+高価な inventory discovery とは分けてあります。
 
 ### `[agent]`
 

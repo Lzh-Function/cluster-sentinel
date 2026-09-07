@@ -86,10 +86,17 @@ Docker で再現できない理由: container では supervisord を使用して
 
 ### 6. Kernel event
 
+container には systemd が無いため、疑似クラスタでは `journal.read` が
+検出されず、`journal.events` probe は動作しません。**実機での検証が必須です。**
+
 | 項目 | 手順 | 期待される結果 |
 | --- | --- | --- |
-| journal の読み取り | `journalctl` へアクセス | `journal.read` capability が検出される |
-| OOM / I/O error | 実際に発生させる、または過去ログで確認 | raw event として保存され、それ自体が診断結果とされないこと |
+| journal の読み取り | `sentinel doctor` | `journal.read` が detected |
+| event の収集 | `logger -p kern.err "test I/O error on dev sda1"` 等 | observation の evidence に記録される |
+| OOM | 実際に発生させる、または過去ログで確認 | `oom` として記録されるが、それ自体で host を degraded にしない |
+| I/O error / hung task | 同上 | `serious` として記録され、host component が degraded になる |
+| **reboot をまたいだ保存** | event 発生後に reboot | controller 側に event が残っており、reboot 後も参照できる |
+| 出力上限 | 大量に log が出る状態で確認 | truncate され、その事実が記録される |
 
 ### 7. Clock skew
 

@@ -213,6 +213,19 @@ pub fn register_builtin_probes(engine: &mut StateEngine) {
         ProbeMapping::new(StateComponent::Accelerator),
     );
 
+    // Kernel events inform the host's health, but gently. A single logged I/O
+    // error is worth preserving and worth showing; it is not by itself a
+    // reason to call a machine broken, and SPEC.md §83 is explicit that a
+    // kernel event is not equivalent to a diagnosis.
+    engine.register(
+        crate::probes::journal::PROBE_ID,
+        ProbeMapping::new(StateComponent::Host).with_policy(DebouncePolicy {
+            warning_threshold: 2,
+            critical_threshold: 6,
+            recovery_threshold: 2,
+        }),
+    );
+
     // A reboot is a recorded fact about the host, and it is not a fault.
     engine.register(
         crate::controller::registration::PROBE_BOOT,
@@ -312,6 +325,7 @@ mod tests {
             crate::probes::nfs::PROBE_SERVER_PORT,
             crate::probes::nfs::PROBE_SERVER_EXPORTS,
             crate::probes::gpu::PROBE_ID,
+            crate::probes::journal::PROBE_ID,
         ] {
             assert!(engine.knows(&ProbeId::new(probe)), "{probe} has no state mapping");
         }
