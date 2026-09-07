@@ -91,6 +91,7 @@ health check やスクリプトから利用できます。
 | [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) | 実装契約・milestone・テスト要件 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | コードの構成と、その理由 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 開発環境・テスト・疑似クラスタ |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | **実クラスタ導入マニュアル**（テンプレート付き）|
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | 設定リファレンス |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | 導入・日常運用・トラブルシューティング |
 | [docs/SECURITY.md](docs/SECURITY.md) | 脅威モデルと保証範囲 |

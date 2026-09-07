@@ -269,6 +269,7 @@ mod tests {
             labels: Default::default(),
             capabilities: vec!["storage.nfs.server".into()],
             addresses: vec![],
+            ports: Default::default(),
         }
     }
 

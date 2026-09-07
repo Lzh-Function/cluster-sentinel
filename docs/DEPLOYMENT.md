@@ -1,0 +1,688 @@
+# 実クラスタ導入マニュアル
+
+実際の計算クラスタへ Cluster Sentinel を導入する手順書です。
+
+前提として、**Sentinel は監視対象を一切変更しません。**
+reboot・`systemctl restart`・mount 操作・`scontrol update` を実行しません。
+したがって導入自体がクラスタの動作を変えることはありませんが、
+段階的に入れることを強く推奨します（[§7](#7-段階的導入)）。
+
+日常運用は [OPERATIONS.md](OPERATIONS.md)、
+設定項目の網羅的な説明は [CONFIGURATION.md](CONFIGURATION.md) を参照してください。
+
+---
+
+## 目次
+
+1. [事前確認](#1-事前確認)
+2. [構成の決定](#2-構成の決定)
+3. [バイナリの配置](#3-バイナリの配置)
+4. [共通の準備（全 host）](#4-共通の準備全-host)
+5. [Controller の構築](#5-controller-の構築)
+6. [Agent の展開](#6-agent-の展開)
+7. [段階的導入](#7-段階的導入)
+8. [SSH ポートが 22 でない場合](#8-ssh-ポートが-22-でない場合)
+9. [その他の非標準構成](#9-その他の非標準構成)
+10. [導入後の確認](#10-導入後の確認)
+11. [設定ファイルテンプレート](#11-設定ファイルテンプレート)
+12. [チェックリスト](#12-チェックリスト)
+
+---
+
+## 1. 事前確認
+
+### 必要なもの
+
+| 項目 | 内容 |
+| --- | --- |
+| OS | Linux（systemd 前提） |
+| 権限 | 各 host の root（インストール時のみ。実行は非特権ユーザー） |
+| network | agent → controller への TCP 到達性（既定 7443） |
+| | controller / peer → 各 host への TCP 到達性（SSH ポート、agent ポート 7444） |
+
+Sentinel は Slurm を **変更しません**。既存の `slurm.conf` を書き換える必要はありません。
+
+### 確認しておく情報
+
+導入前に以下を控えてください。設定に必要です。
+
+```bash
+# controller になる host 名と、agent から到達可能なアドレス
+hostname -f
+
+# Slurm の controller と node 定義（あれば）
+grep -E "^(SlurmctldHost|ControlMachine|NodeName)" /etc/slurm/slurm.conf
+
+# SSH のポート（22 以外なら §8 を参照）
+grep -iE "^\s*(Port|ListenAddress)" /etc/ssh/sshd_config
+
+# Slurm の外にある host（fileserver 等）の一覧と、その storage 構成
+```
+
+---
+
+## 2. 構成の決定
+
+以下を決めます。
+
+| 決めること | 例 | 備考 |
+| --- | --- | --- |
+| environment 名 | `mizuno-lab` | 全 host で一致させる |
+| controller を置く host | `parent` | source code には現れない。設定だけの問題 |
+| scheduler entity 名 | `mizuno_cluster` | Slurm の ClusterName に合わせると分かりやすい |
+| observer にする host | controller / fileserver / 一部 compute | **3 台以上**を推奨（後述） |
+| storage の依存関係 | どの node がどの fileserver を使うか | 誤診断を避けるために重要 |
+
+### observer を 3 台以上にする理由
+
+observer が 1 台しかない場合、Sentinel は **到達性の診断を行いません。**
+1 視点では「host が死んだ」と「経路が切れた」を区別できないためです。
+
+異なる障害ドメインの host を選んでください。
+同じ storage の背後にいる 3 台は、視点 1 つを 3 回数えているだけです。
+
+### storage の依存関係を書く理由
+
+これを書かないと、複数 node の storage 障害が
+`SHARED_STORAGE_FAILURE`（原因は fileserver）ではなく、
+個別の `NFS_CLIENT_FAILURE` として報告されます。
+5 人が 5 つの症状を追いかけることになります。
+
+---
+
+## 3. バイナリの配置
+
+```bash
+cargo build --release        # または配布された成果物を使用
+sudo install -m 0755 target/release/sentinel /usr/local/bin/sentinel
+sentinel version
+```
+
+同一アーキテクチャであれば全 host に同じバイナリを配布できます。
+host ごとのビルドは不要です。
+
+---
+
+## 4. 共通の準備（全 host）
+
+controller・agent の別なく、全 host で実施します。
+
+```bash
+# サービスユーザー（非特権）
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentinel
+
+# ディレクトリ
+sudo install -d -o sentinel -g sentinel -m 0750 /var/lib/sentinel
+sudo install -d -m 0755 /etc/sentinel
+```
+
+### cluster credential
+
+**environment 内の全 host で同一の値**を使用します。
+controller で 1 回生成し、安全な方法で配布してください。
+
+```bash
+# controller で 1 回だけ
+head -c 32 /dev/urandom | base64 | sudo tee /etc/sentinel/token > /dev/null
+
+# 全 host で
+sudo chown sentinel:sentinel /etc/sentinel/token
+sudo chmod 0400 /etc/sentinel/token
+```
+
+> credential 無しでは controller も agent も **起動を拒否します**。
+> 未認証で動作するモードはありません。
+
+配布に scp を使う場合、経由地にファイルを残さないよう注意してください。
+
+---
+
+## 5. Controller の構築
+
+### 5.1 設定ファイル
+
+`/etc/sentinel/config.toml` を作成します。
+テンプレートは [§11.1](#111-controller-etcsentinelconfigtoml) にあります。
+
+### 5.2 検証
+
+**起動前に必ず実行してください。**
+
+```bash
+sudo -u sentinel sentinel config check
+```
+
+検出できる問題をすべて報告します（最初の 1 件で止まりません）。
+`error` が 1 つでもあれば起動しません。
+
+`warning` は許容されます。特に
+「宣言されていない entity への依存」は、
+Slurm discovery や agent registration から到着する予定のものであれば正常です。
+
+### 5.3 systemd unit
+
+```bash
+sudo sentinel install controller
+```
+
+生成される unit は hardening 済みです
+（`ProtectSystem=strict` / `NoNewPrivileges` / capability なし / 書き込み可能パスは 1 つ）。
+credential は unit に埋め込まれず、ファイルを参照します。
+
+内容を確認したい場合:
+
+```bash
+sentinel install controller --dry-run
+```
+
+### 5.4 起動
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sentinel-controller
+systemctl status sentinel-controller
+journalctl -u sentinel-controller -f
+```
+
+### 5.5 動作確認
+
+```bash
+curl -fsS http://localhost:7443/v1/health
+sentinel status
+sentinel dependency list
+```
+
+この時点では agent がいないため、多くの entity が `UNKNOWN` です。
+**これは正常です。** 観測していないものを healthy とは呼びません。
+
+---
+
+## 6. Agent の展開
+
+### 6.1 設定ファイル
+
+`/etc/sentinel/config.toml` を作成します。
+agent 側は非常に小さくて済みます（[§11.2](#112-agent-etcsentinelconfigtoml)）。
+
+capability は agent が自動検出するため、列挙する必要はありません。
+
+### 6.2 起動
+
+```bash
+sudo -u sentinel sentinel config check
+sudo sentinel install agent
+sudo systemctl daemon-reload
+sudo systemctl enable --now sentinel-agent
+```
+
+### 6.3 確認
+
+```bash
+# この host が Sentinel からどう見えるか、capability の判定理由つき
+sentinel doctor
+
+# controller 側から
+sentinel entity show <hostname>
+```
+
+`sentinel doctor` は capability ごとに
+「detected on this host」「not present on this host」
+「forced on by configuration」「suggested by a role」
+のいずれかを表示します。想定と違う場合はここで分かります。
+
+---
+
+## 7. 段階的導入
+
+実クラスタは開発環境ではありません。以下の順で進めてください。
+
+| 段階 | 作業 | 確認すること | 目安 |
+| --- | --- | --- | --- |
+| 1 | controller のみ | `sentinel status` が既存構成を正しく表示 | 1 日 |
+| 2 | agent 1 台（重要度の低い node） | 登録される。`sentinel entity show` が妥当 | 1 日 |
+| 3 | agent 数台 | 全台登録。誤検知が出ない | 2-3 日 |
+| 4 | `observer.peer` を付与 | `sentinel peers` で observer が 3 台付く | 2-3 日 |
+| 5 | storage の依存関係を記述 | `sentinel dependency list` が実構成と一致 | |
+| 6 | notification を有効化 | **まずテスト用の宛先へ** | 1 週間 |
+| 7 | 全台展開 | | |
+
+各段階で数日おき、**誤検知が出ないこと**を確認してから次へ進んでください。
+誤検知に慣れた運用者は、本物の警告も無視するようになります。
+
+### 実クラスタでの障害注入について
+
+**自動実行してはなりません。**
+
+* NFS server の停止
+* network 全体への iptables 変更
+* reboot
+* filesystem 操作
+
+Docker 疑似クラスタ（`dev/compose/`）で代替できるものはそちらで行ってください。
+実機でしか確認できない項目は [VM_VALIDATION.md](VM_VALIDATION.md) にまとめてあります。
+
+---
+
+## 8. SSH ポートが 22 でない場合
+
+SSH を 22 以外で運用している場合、**設定しないと全 host が SSH 障害として報告されます。**
+probe が閉じたポートを叩き、正しく「何もない」と報告するためです。
+
+### 8.1 agent がいる host
+
+**通常は何もしなくて構いません。**
+agent が `/etc/ssh/sshd_config` を読み、`Port` / `ListenAddress host:port` から
+実際のポートを検出して controller へ報告します。
+
+確認:
+
+```bash
+sentinel doctor --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("hostname"))'
+# controller 側で、報告されたポートを確認
+sentinel entity show <hostname> --json | python3 -c 'import json,sys; print(json.load(sys.stdin))'
+```
+
+`sshd_config` が読めない、あるいはポートが別の場所で設定されている場合は
+明示します。
+
+```toml
+[agent]
+controller_address = "parent:7443"
+ssh_port = 2222        # sshd_config から読めない場合のみ
+```
+
+優先順位は次のとおりです。
+
+```text
+[agent] ssh_port  >  sshd_config の Port  >  既定値 22
+```
+
+### 8.2 agent がいない host（設定で宣言する host）
+
+自分で報告できないため、**必ず明示してください。**
+
+```toml
+[[entities]]
+type = "host"
+name = "filesrv01"
+addresses = ["10.0.0.10"]
+ports = { ssh = 2222 }
+capabilities = ["storage.nfs.server", "observer.peer"]
+```
+
+### 8.3 host ごとにポートが異なる場合
+
+`ports` は entity ごとの設定です。混在して構いません。
+
+```toml
+[[entities]]
+type = "host"
+name = "filesrv01"
+ports = { ssh = 2222 }
+
+[[entities]]
+type = "host"
+name = "filesrv02"
+# 22 のまま。ports を書かない
+```
+
+### 8.4 確認方法
+
+```bash
+# 期待どおりのポートを叩いているか
+sentinel entity show <hostname>       # ssh component が HEALTHY か
+sentinel diagnose                     # SSH_SERVICE_FAILURE が出ていないか
+```
+
+`SSH_SERVICE_FAILURE` が全 host に出る場合、ポート設定を疑ってください。
+
+---
+
+## 9. その他の非標準構成
+
+### 9.1 agent のポートを変える
+
+既定は 7444 です。変更する場合:
+
+```toml
+[agent]
+listen = "0.0.0.0:9444"
+```
+
+agent は自分のポートを registration で報告するため、
+**controller 側に追記する必要はありません。**
+peer も正しいポートを叩きます。
+
+agent がいない host に対して指定する場合のみ:
+
+```toml
+ports = { agent = 9444 }
+```
+
+### 9.2 controller のポートを変える
+
+```toml
+# controller 側
+[controller]
+listen = "0.0.0.0:8443"
+
+# agent 側
+[agent]
+controller_address = "parent:8443"
+```
+
+### 9.3 Slurm NodeName と hostname が異なる
+
+**設定は不要です。** Sentinel は両者を別のものとして扱い、
+`NodeHostName` で対応付けます。
+
+### 9.4 Slurm の設定ファイルが標準の場所にない
+
+```toml
+[discovery.slurm]
+enabled = true
+scontrol_path = "/opt/slurm/bin/scontrol"
+```
+
+allowlist はファイル名で照合するため、
+`/opt/slurm/bin/scontrol` は許可され、`/opt/scontrol/rm` は許可されません。
+
+### 9.5 capability の自動検出が期待と違う
+
+```bash
+sentinel doctor    # 判定理由を確認
+```
+
+そのうえで上書きします。
+
+```toml
+[capabilities]
+"storage.nfs.server" = "force"     # 検出結果によらず ON
+"storage.smart"      = "disable"   # 検出結果によらず OFF
+"storage.zfs"        = "enable"    # 検出が何も言わなかった場合に ON
+```
+
+優先順位:
+
+```text
+disable  >  force  >  runtime discovery  >  enable / role hint
+```
+
+### 9.6 TLS
+
+v1 の agent は controller address をそのまま URL として解釈します。
+`host:port` は `http://` として扱われます。
+
+production では TLS を終端してください。
+
+```toml
+[agent]
+controller_address = "https://parent:7443"
+```
+
+TLS 無しの場合、cluster network 上の受動的観測者に credential が露出します。
+詳細は [SECURITY.md](SECURITY.md) を参照してください。
+
+---
+
+## 10. 導入後の確認
+
+```bash
+# 全 agent が登録されたか
+curl -fsS http://localhost:7443/v1/health
+
+# 全 entity が想定どおりか
+sentinel status
+
+# 依存関係が実構成と一致するか
+sentinel dependency list
+
+# observer が 3 台付いているか。付いていない entity は明示される
+sentinel peers
+
+# 誤検知が出ていないか
+sentinel diagnose
+```
+
+### 導入直後に期待される状態
+
+| 状態 | 意味 |
+| --- | --- |
+| 多くが `HEALTHY` | 正常 |
+| agent 未導入の host が `UNKNOWN` | **正常。** 観測していないものを healthy とは呼びません |
+| `sentinel diagnose` が空 | 正常 |
+| `SLURM_ONLY_DEGRADATION` | 実際に DRAIN されている node があれば正常 |
+
+### 誤検知が出た場合
+
+| 症状 | 疑うところ |
+| --- | --- |
+| 全 host に `SSH_SERVICE_FAILURE` | SSH ポート（[§8](#8-ssh-ポートが-22-でない場合)） |
+| fileserver に `SLURM_*` | 通常起きません。起きた場合は報告してください |
+| 個別の `NFS_CLIENT_FAILURE` が多発 | storage の依存関係が未記述 |
+| 到達性の診断が一切出ない | observer 不足（`sentinel peers`） |
+
+---
+
+## 11. 設定ファイルテンプレート
+
+コピーして使えるテンプレートは [`docs/templates/`](templates/) にもあります。
+
+### 11.1 Controller (`/etc/sentinel/config.toml`)
+
+```toml
+config_version = 1
+
+# 全 host で一致させること
+environment = "mizuno-lab"
+
+[controller]
+listen = "0.0.0.0:7443"
+inventory_interval = "5m"
+# controller 自身も観測点として動作する。
+# firewall の内側にいて視界が偏る場合のみ false にする
+observe = true
+
+[database]
+path = "/var/lib/sentinel/sentinel.db"
+
+[peer_monitoring]
+# 1 entity あたりの observer 数。
+# 0 にすると到達性の診断ができなくなる
+degree = 3
+
+[discovery.slurm]
+enabled = true
+# scontrol が PATH にない場合のみ
+# scontrol_path = "/opt/slurm/bin/scontrol"
+
+[notification]
+# 導入初期は "critical" にして様子を見るのも可
+min_severity = "warning"
+
+# [[notification.webhooks]]
+# name = "ntfy"
+# url  = "https://ntfy.example.org/cluster-sentinel"
+
+# ---------------------------------------------------------------------------
+# Scheduler entity
+#
+# Slurm の ClusterName に合わせておくと分かりやすい。
+# 書かない場合は "slurm" になる。
+# ---------------------------------------------------------------------------
+[[entities]]
+type = "scheduler"
+name = "mizuno_cluster"
+
+# ---------------------------------------------------------------------------
+# Slurm の外にある host
+#
+# Slurm discovery では見つからないため、ここで宣言する。
+# agent を入れる予定であっても、先に書いておいてよい（merge される）。
+# ---------------------------------------------------------------------------
+[[entities]]
+type = "host"
+name = "filesrv01"
+addresses = ["10.0.0.10"]
+capabilities = ["storage.nfs.server", "observer.peer"]
+labels = { role = "fileserver", rack = "r01" }
+# SSH が 22 以外の場合のみ
+# ports = { ssh = 2222 }
+
+[[entities]]
+type = "host"
+name = "filesrv02"
+addresses = ["10.0.0.11"]
+capabilities = ["storage.nfs.server", "observer.peer"]
+labels = { role = "fileserver", rack = "r01" }
+
+# ---------------------------------------------------------------------------
+# Storage entity
+#
+# fileserver そのものとは別の概念として扱う。
+# 「fileserver は生きているが export service だけ落ちた」を表現するために必要。
+# ---------------------------------------------------------------------------
+[[entities]]
+type = "storage"
+name = "filesrv01-storage"
+
+[[entities]]
+type = "storage"
+name = "filesrv02-storage"
+
+# ---------------------------------------------------------------------------
+# 依存関係
+#
+# ここを書かないと、複数 node の storage 障害が
+# SHARED_STORAGE_FAILURE（原因 = fileserver）ではなく
+# 個別の NFS_CLIENT_FAILURE として報告される。
+#
+# from が to に依存する。
+# ---------------------------------------------------------------------------
+[[dependencies]]
+from = "storage/filesrv01-storage"
+to   = "host/filesrv01"
+type = "provides"
+
+[[dependencies]]
+from = "storage/filesrv02-storage"
+to   = "host/filesrv02"
+type = "provides"
+
+# filesrv01 を使う node
+[[dependencies]]
+from = "host/creator2"
+to   = "storage/filesrv01-storage"
+type = "uses_storage"
+
+[[dependencies]]
+from = "host/creator3"
+to   = "storage/filesrv01-storage"
+type = "uses_storage"
+
+# filesrv02 を使う node
+[[dependencies]]
+from = "host/creator5"
+to   = "storage/filesrv02-storage"
+type = "uses_storage"
+
+# ---------------------------------------------------------------------------
+# capability の上書き（必要な場合のみ）
+# ---------------------------------------------------------------------------
+# [capabilities]
+# "storage.nfs.server" = "force"
+```
+
+### 11.2 Agent (`/etc/sentinel/config.toml`)
+
+**全 agent host で同じ内容で構いません。**
+capability は自動検出されます。
+
+```toml
+config_version = 1
+
+# controller と一致させること
+environment = "mizuno-lab"
+
+[agent]
+controller_address = "parent:7443"
+spool_path = "/var/lib/sentinel/spool.db"
+
+# health endpoint。peer がここを見て
+# 「agent だけ落ちた」と「host が落ちた」を区別する
+listen = "0.0.0.0:7444"
+
+# SSH が 22 以外で、かつ sshd_config から読めない場合のみ
+# ssh_port = 2222
+
+# UI 上のグループ分けにのみ使う。probe を有効化しない
+roles = ["compute"]
+
+# ---------------------------------------------------------------------------
+# この host を peer observer にする場合
+#
+# observer は互いに異なる障害ドメインから選ぶこと。
+# ---------------------------------------------------------------------------
+[capabilities]
+"observer.peer" = "force"
+```
+
+### 11.3 最小構成（動作確認用）
+
+```toml
+# controller
+config_version = 1
+environment = "mizuno-lab"
+
+[controller]
+listen = "0.0.0.0:7443"
+
+[database]
+path = "/var/lib/sentinel/sentinel.db"
+
+[discovery.slurm]
+enabled = true
+```
+
+```toml
+# agent
+config_version = 1
+environment = "mizuno-lab"
+
+[agent]
+controller_address = "parent:7443"
+```
+
+---
+
+## 12. チェックリスト
+
+### 導入前
+
+- [ ] environment 名を決めた
+- [ ] controller を置く host を決めた
+- [ ] observer にする host を 3 台以上決めた（異なる障害ドメイン）
+- [ ] storage の依存関係を把握した
+- [ ] SSH ポートを確認した（22 以外なら [§8](#8-ssh-ポートが-22-でない場合)）
+- [ ] agent → controller の network 到達性を確認した
+
+### 各 host
+
+- [ ] `sentinel` を `/usr/local/bin` へ配置した
+- [ ] `sentinel` ユーザーとディレクトリを作成した
+- [ ] `/etc/sentinel/token` を配置した（0400、`sentinel` 所有）
+- [ ] `/etc/sentinel/config.toml` を作成した
+- [ ] `sentinel config check` が通った
+- [ ] `sentinel install <role>` で unit を生成した
+- [ ] サービスが起動し、`systemctl status` が正常
+- [ ] `sentinel doctor` の capability が想定どおり
+
+### 全体
+
+- [ ] `curl .../v1/health` で全 agent が登録されている
+- [ ] `sentinel status` が実構成と一致する
+- [ ] `sentinel dependency list` が実 storage 構成と一致する
+- [ ] `sentinel peers` で observer の付いていない entity がない
+- [ ] `sentinel diagnose` に誤検知がない
+- [ ] 数日おいて誤検知が出ないことを確認した
+- [ ] notification をテスト宛先で確認した

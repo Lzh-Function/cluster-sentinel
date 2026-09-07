@@ -109,6 +109,10 @@ pub struct Agent {
     registered_flag: Arc<std::sync::atomic::AtomicBool>,
     /// GPUs the probe has actually seen, if it has run.
     observed_gpu_count: Option<u64>,
+    /// SSH port, when the operator has stated one explicitly.
+    ssh_port: Option<u16>,
+    /// The port this agent's own health endpoint listens on.
+    rpc_port: Option<u16>,
     /// Peers this agent observes on the controller's behalf.
     peer_probes: PeerProbes,
     /// When the assignment was last refreshed.
@@ -156,6 +160,12 @@ impl Agent {
             started_at: std::time::Instant::now(),
             registered_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             observed_gpu_count: None,
+            ssh_port: config.agent.ssh_port,
+            rpc_port: config
+                .agent
+                .listen
+                .rsplit_once(':')
+                .and_then(|(_, port)| port.parse().ok()),
             peer_probes: PeerProbes::new(entity),
             assignment_refreshed_at: None,
         })
@@ -313,6 +323,31 @@ impl Agent {
         &self.spool
     }
 
+    /// Where this host's services actually listen.
+    ///
+    /// Only non-default values are reported; the controller applies the
+    /// defaults itself, so an ordinary host sends nothing here.
+    fn service_ports(&self) -> std::collections::BTreeMap<String, u16> {
+        let mut ports = std::collections::BTreeMap::new();
+
+        // Explicit configuration wins over what is read from sshd_config,
+        // which wins over the default (SPEC.md §19's precedence, applied here).
+        let ssh_port = self
+            .ssh_port
+            .or_else(|| discovery::detect_ssh_port(self.inspector.as_ref()));
+        if let Some(port) = ssh_port.filter(|p| *p != crate::probes::ssh::DEFAULT_PORT) {
+            ports.insert("ssh".to_string(), port);
+        }
+
+        // The agent's own port, so peers reach the endpoint it is really on
+        // rather than the one they assume.
+        if let Some(port) = self.rpc_port.filter(|p| *p != rpc::DEFAULT_PORT) {
+            ports.insert("agent".to_string(), port);
+        }
+
+        ports
+    }
+
     /// Build the registration this agent would send.
     pub fn registration(&self) -> RegisterRequest {
         let gpus = self
@@ -328,6 +363,7 @@ impl Agent {
             fqdn: self.inspector.fqdn(),
             boot_id: self.inspector.boot_id(),
             addresses: self.inspector.addresses(),
+            ports: self.service_ports(),
             capabilities: self.capabilities.clone(),
             hardware: serde_json::to_value(discovery::hardware(self.inspector.as_ref(), gpus))
                 .unwrap_or(serde_json::Value::Null),
@@ -609,6 +645,77 @@ mod tests {
         assert_eq!(request.addresses, ["192.0.2.1"]);
         assert_eq!(request.hardware["cpus"], 8);
         assert_eq!(request.protocol_version, PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_host_reports_no_ports_at_all() {
+        // Defaults are the controller's business; sending them would be noise.
+        let agent = agent_with(FakeInspector::bare(), "127.0.0.1:1").await;
+        assert!(agent.registration().ports.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_non_standard_ssh_port_is_read_from_sshd_config_and_reported() {
+        // A cluster that moved SSH off 22 would otherwise have every host
+        // probed on 22 and reported down.
+        let inspector = FakeInspector::bare().with_file(crate::agent::discovery::SSHD_CONFIG_PATH, "Port 2222\n");
+        let agent = agent_with(inspector, "127.0.0.1:1").await;
+
+        assert_eq!(agent.registration().ports.get("ssh"), Some(&2222));
+    }
+
+    #[tokio::test]
+    async fn an_explicit_ssh_port_overrides_what_was_read_from_the_file() {
+        let credential = ClusterCredential::new("0123456789abcdef0123456789abcdef");
+        let mut config = config(vec![]);
+        config.agent.ssh_port = Some(2022);
+
+        let inspector = FakeInspector::bare().with_file(crate::agent::discovery::SSHD_CONFIG_PATH, "Port 2222\n");
+        let agent = Agent::new(
+            &config,
+            Arc::new(inspector),
+            ControllerClient::new("127.0.0.1:1", &credential, Duration::from_millis(100)).expect("client"),
+            Spool::open_in_memory(SpoolLimits::default()).await.expect("spool"),
+        )
+        .expect("agent");
+
+        assert_eq!(agent.registration().ports.get("ssh"), Some(&2022));
+    }
+
+    #[tokio::test]
+    async fn a_non_default_agent_port_is_reported_so_peers_can_find_it() {
+        // Otherwise moving the agent's listen address silently breaks peer
+        // monitoring: peers keep probing the port nobody is on.
+        let credential = ClusterCredential::new("0123456789abcdef0123456789abcdef");
+        let mut config = config(vec![]);
+        config.agent.listen = "0.0.0.0:9444".into();
+
+        let agent = Agent::new(
+            &config,
+            Arc::new(FakeInspector::bare()),
+            ControllerClient::new("127.0.0.1:1", &credential, Duration::from_millis(100)).expect("client"),
+            Spool::open_in_memory(SpoolLimits::default()).await.expect("spool"),
+        )
+        .expect("agent");
+
+        assert_eq!(agent.registration().ports.get("agent"), Some(&9444));
+    }
+
+    #[tokio::test]
+    async fn a_default_port_stated_explicitly_is_still_not_reported() {
+        let credential = ClusterCredential::new("0123456789abcdef0123456789abcdef");
+        let mut config = config(vec![]);
+        config.agent.ssh_port = Some(22);
+
+        let agent = Agent::new(
+            &config,
+            Arc::new(FakeInspector::bare()),
+            ControllerClient::new("127.0.0.1:1", &credential, Duration::from_millis(100)).expect("client"),
+            Spool::open_in_memory(SpoolLimits::default()).await.expect("spool"),
+        )
+        .expect("agent");
+
+        assert!(agent.registration().ports.is_empty(), "the default needs no stating");
     }
 
     #[tokio::test]

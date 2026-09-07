@@ -366,3 +366,70 @@ async fn the_agent_probes_its_own_host_and_the_observations_reach_the_controller
 
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_host_with_a_non_standard_ssh_port_is_probed_on_the_right_port() {
+    // A cluster that moved SSH off 22 must not have every host reported as
+    // SSH-down. This exercises the whole path: configured port -> entity
+    // metadata -> endpoint resolution -> the probe's actual connection.
+    use sentinel::controller::endpoint_for;
+    use sentinel::entity::DiscoverySource;
+
+    let (ssh_port, _ssh) = ssh_server().await;
+
+    // Declared in configuration, as a host with no agent would be.
+    let config = sentinel::config::Config::from_toml(
+        &format!(
+            r#"
+config_version = 1
+environment = "lab"
+
+[[entities]]
+type = "host"
+name = "node-a"
+capabilities = ["network.tcp", "ssh.server"]
+addresses = ["127.0.0.1"]
+ports = {{ ssh = {ssh_port} }}
+"#
+        ),
+        std::path::Path::new("test.toml"),
+    )
+    .expect("parse config");
+
+    let snapshot = sentinel::inventory::static_config::StaticConfigProvider::new(config).snapshot();
+    let entity = &snapshot.entities[0];
+    assert_eq!(entity.discovery_sources, vec![DiscoverySource::StaticConfig]);
+
+    // The endpoint carries the configured port through to the probe.
+    let endpoint = endpoint_for(entity).expect("endpoint");
+    assert_eq!(endpoint.parameters()["ssh_port"], ssh_port);
+
+    // And the probe finds SSH there.
+    let observations = RemoteObserver::new().observe(entity).await;
+    let ssh = observations
+        .iter()
+        .find(|o| o.probe_id.as_str() == ssh::PROBE_ID)
+        .expect("the SSH probe ran");
+
+    assert_eq!(ssh.status, ProbeStatus::Ok, "SSH must be found on its real port");
+    assert_eq!(ssh.payload["port"], ssh_port);
+}
+
+#[tokio::test]
+async fn without_the_configured_port_the_same_host_would_look_down() {
+    // The counter-example that shows the previous test is testing something:
+    // probe the same host on the default port and SSH is, correctly, absent.
+    let (_ssh_port, _ssh) = ssh_server().await;
+
+    let mut entity = ManagedEntity::new("lab", EntityType::Host, "node-a")
+        .with_capabilities(CapabilitySet::from_iter(["network.tcp", "ssh.server"]));
+    entity.metadata = serde_json::json!({ "host": { "addresses": ["127.0.0.1"] } });
+
+    let observations = RemoteObserver::new().observe(&entity).await;
+    let ssh = observations
+        .iter()
+        .find(|o| o.probe_id.as_str() == ssh::PROBE_ID)
+        .expect("the SSH probe ran");
+
+    assert_ne!(ssh.status, ProbeStatus::Ok, "nothing is listening on 22 here");
+}

@@ -1,0 +1,43 @@
+# Cluster Sentinel — agent
+#
+# 配置先: /etc/sentinel/config.toml（監視対象の各 host）
+# 検証:   sudo -u sentinel sentinel config check
+#
+# 全 agent host で同じ内容にできます。
+# capability は agent が自動検出するため、列挙する必要はありません。
+
+config_version = 1
+
+# controller の environment と一致させること。
+environment = "CHANGE-ME-environment"
+
+[agent]
+controller_address = "CHANGE-ME-controller-host:7443"
+spool_path = "/var/lib/sentinel/spool.db"
+
+# health endpoint。peer がここを見て
+# 「agent だけ落ちた」と「host が落ちた」を区別します。
+# 変更した場合、agent が自分で controller に報告するため
+# controller 側への追記は不要です。
+listen = "0.0.0.0:7444"
+
+# SSH が 22 以外で、かつ /etc/ssh/sshd_config から読めない場合のみ指定。
+# 通常は agent が sshd_config から自動検出します。
+# ssh_port = 2222
+
+# UI 上のグループ分けと既定値の提示にのみ使われます。
+# probe を有効化することはありません。
+roles = ["compute"]
+
+
+# ===========================================================================
+# この host を peer observer にする場合
+#
+# observer は互いに異なる障害ドメインから選んでください。
+# 同じ storage の背後にいる 3 台は、視点 1 つを 3 回数えているだけです。
+#
+# observer が 1 台以下の entity については、
+# 到達性の診断が一切行われません。
+# ===========================================================================
+[capabilities]
+"observer.peer" = "force"

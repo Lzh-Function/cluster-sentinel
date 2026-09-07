@@ -14,6 +14,19 @@ Docker 疑似クラスタに対して 23 項目すべてが通ります。
 
 ### 横断的な事項
 
+* **非標準ポートの設定**（新規機能）。
+  `metadata.ports` は読まれていたが、どの provider も書いていなかったため、
+  SSH が 22 以外のクラスタは設定不可能だった。
+  * agent が `/etc/ssh/sshd_config` の `Port` / `ListenAddress host:port` を
+    読んで自動検出し、controller へ報告する。
+  * `[agent] ssh_port` で明示的に上書きできる。
+  * agent がいない host は `[[entities]] ports = { ssh = 2222 }` で宣言する。
+  * agent は自分の `listen` ポートも報告するため、
+    変更しても peer が正しい場所を叩く。
+* `docs/DEPLOYMENT.md` — 実クラスタ導入マニュアル。
+* `docs/templates/` — コピーして使える設定テンプレート。
+  テンプレートが `config check` を通ることをテストで強制する。
+
 * v1 受け入れ手順の自動化（23 項目）。
   各段階で 1 つだけを壊し、それを指すことと **他を指さないこと** を検査する。
 * `SENTINEL_AGENT_FAILURE` / `SSH_SERVICE_FAILURE` rule。

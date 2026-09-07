@@ -34,6 +34,58 @@ pub fn role_hints(role: &str) -> BTreeSet<Capability> {
     names.iter().map(|n| Capability::new(*n)).collect()
 }
 
+/// Where `sshd` keeps its configuration.
+pub const SSHD_CONFIG_PATH: &str = "/etc/ssh/sshd_config";
+
+/// Work out which port `sshd` listens on.
+///
+/// Read from the configuration rather than assumed, because a cluster that
+/// moved SSH off 22 would otherwise have every host reported as SSH-down: the
+/// probe would knock on a closed port and be told, correctly, that nothing is
+/// there. An operator can still override this explicitly.
+///
+/// `ListenAddress host:port` also carries a port, and takes effect the same
+/// way, so both spellings are honoured.
+pub fn detect_ssh_port(inspector: &dyn SystemInspector) -> Option<u16> {
+    let config = inspector.read_file(Path::new(SSHD_CONFIG_PATH))?;
+    parse_sshd_port(&config)
+}
+
+/// Parse the effective port out of an `sshd_config`.
+pub fn parse_sshd_port(config: &str) -> Option<u16> {
+    let mut from_listen_address = None;
+
+    for line in config.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut fields = line.split_whitespace();
+        let Some(keyword) = fields.next() else {
+            continue;
+        };
+
+        // `Port` wins outright; the first one is the one to report, since a
+        // probe only needs one working way in.
+        if keyword.eq_ignore_ascii_case("Port") {
+            if let Some(port) = fields.next().and_then(|p| p.parse().ok()) {
+                return Some(port);
+            }
+        }
+
+        // `ListenAddress host:port` or `ListenAddress [v6]:port`.
+        if keyword.eq_ignore_ascii_case("ListenAddress") && from_listen_address.is_none() {
+            if let Some(value) = fields.next() {
+                let tail = value.rsplit_once(':').map(|(_, port)| port);
+                from_listen_address = tail.and_then(|p| p.parse().ok());
+            }
+        }
+    }
+
+    from_listen_address
+}
+
 /// Detect what this machine can do.
 ///
 /// Returns an outcome per capability considered — including the negatives,
@@ -123,6 +175,63 @@ mod tests {
 
     fn outcome(found: &BTreeMap<Capability, DiscoveryOutcome>, name: &str) -> Option<DiscoveryOutcome> {
         found.get(&Capability::new(name)).copied()
+    }
+
+    #[test]
+    fn a_standard_sshd_config_yields_no_explicit_port() {
+        // Most hosts say nothing, and the default applies.
+        assert_eq!(parse_sshd_port("PermitRootLogin no\nX11Forwarding yes\n"), None);
+        assert_eq!(parse_sshd_port(""), None);
+    }
+
+    #[test]
+    fn a_non_standard_port_is_read_from_the_configuration() {
+        // A cluster that moved SSH off 22 would otherwise have every host
+        // reported as SSH-down.
+        assert_eq!(parse_sshd_port("Port 2222\n"), Some(2222));
+        assert_eq!(
+            parse_sshd_port("  port  2222  \n"),
+            Some(2222),
+            "the keyword is case-insensitive"
+        );
+    }
+
+    #[test]
+    fn a_commented_out_port_is_ignored() {
+        // Distributions ship `#Port 22`, and reading it would be reporting a
+        // setting nobody made.
+        assert_eq!(parse_sshd_port("#Port 2222\nPermitRootLogin no\n"), None);
+        assert_eq!(parse_sshd_port("Port 2222 # moved for the audit\n"), Some(2222));
+    }
+
+    #[test]
+    fn the_first_port_wins_when_several_are_configured() {
+        // sshd listens on all of them; a probe only needs one way in.
+        assert_eq!(parse_sshd_port("Port 2222\nPort 2223\n"), Some(2222));
+    }
+
+    #[test]
+    fn a_port_from_listen_address_is_honoured() {
+        assert_eq!(parse_sshd_port("ListenAddress 10.0.0.1:2222\n"), Some(2222));
+        assert_eq!(parse_sshd_port("ListenAddress [2001:db8::1]:2222\n"), Some(2222));
+    }
+
+    #[test]
+    fn a_listen_address_without_a_port_yields_nothing() {
+        assert_eq!(parse_sshd_port("ListenAddress 10.0.0.1\n"), None);
+    }
+
+    #[test]
+    fn an_explicit_port_beats_a_listen_address() {
+        assert_eq!(parse_sshd_port("ListenAddress 10.0.0.1:2223\nPort 2222\n"), Some(2222));
+    }
+
+    #[test]
+    fn the_port_is_read_from_the_hosts_own_sshd_config() {
+        let inspector = FakeInspector::bare().with_file(SSHD_CONFIG_PATH, "Port 2222\n");
+        assert_eq!(detect_ssh_port(&inspector), Some(2222));
+
+        assert_eq!(detect_ssh_port(&FakeInspector::bare()), None, "no config, no claim");
     }
 
     #[test]

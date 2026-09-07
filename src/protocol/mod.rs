@@ -60,6 +60,13 @@ pub struct RegisterRequest {
     /// Addresses this host answers on. Never identity (SPEC.md §37).
     #[serde(default)]
     pub addresses: Vec<String>,
+    /// Ports this host's services listen on, where they are not the defaults.
+    ///
+    /// Reported by the agent rather than assumed by the controller: the host
+    /// is the only thing that actually knows, and a peer probing the wrong
+    /// port would report a service down that is running perfectly.
+    #[serde(default)]
+    pub ports: std::collections::BTreeMap<String, u16>,
     /// Capabilities discovered at runtime.
     pub capabilities: CapabilitySet,
     /// Hardware summary, for comparison against scheduler configuration.
@@ -81,6 +88,7 @@ impl RegisterRequest {
             fqdn: None,
             boot_id: None,
             addresses: Vec::new(),
+            ports: std::collections::BTreeMap::new(),
             capabilities,
             hardware: serde_json::Value::Null,
             roles: Vec::new(),

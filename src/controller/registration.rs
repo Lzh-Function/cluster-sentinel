@@ -56,6 +56,9 @@ pub fn snapshot_from_registration(request: &RegisterRequest) -> InventorySnapsho
             "boot_id": request.boot_id,
             "addresses": request.addresses,
         },
+        // Where to reach this host's services. Reported rather than assumed:
+        // probing the wrong port reports a service down that is running fine.
+        "ports": request.ports,
         "hardware": request.hardware,
     });
 
@@ -209,6 +212,31 @@ mod tests {
         assert_eq!(
             with_addresses.entities[0].metadata["host"]["addresses"][0],
             "192.0.2.10"
+        );
+    }
+
+    #[test]
+    fn reported_ports_reach_the_entity_so_peers_probe_the_right_place() {
+        let mut request = registration("node-a", None);
+        request.ports = std::collections::BTreeMap::from([("ssh".to_string(), 2222u16)]);
+
+        let entity = &snapshot_from_registration(&request).entities[0];
+        assert_eq!(entity.metadata["ports"]["ssh"], 2222);
+
+        // And the endpoint resolution actually uses them.
+        let endpoint = crate::controller::endpoint_for(entity).expect("endpoint");
+        assert_eq!(endpoint.parameters()["ssh_port"], 2222);
+    }
+
+    #[test]
+    fn ports_do_not_affect_identity() {
+        let mut with_ports = registration("node-a", None);
+        with_ports.ports = std::collections::BTreeMap::from([("ssh".to_string(), 2222u16)]);
+        let without_ports = registration("node-a", None);
+
+        assert_eq!(
+            snapshot_from_registration(&with_ports).entities[0].id,
+            snapshot_from_registration(&without_ports).entities[0].id
         );
     }
 

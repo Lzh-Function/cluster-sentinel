@@ -57,10 +57,17 @@ impl StaticConfigProvider {
             for (key, value) in &declared.labels {
                 entity = entity.with_label(key, value);
             }
+            // Addresses and ports are reachability data hung off the entity,
+            // never part of its identity (SPEC.md §37).
+            let mut metadata = serde_json::Map::new();
             if !declared.addresses.is_empty() {
-                // Addresses are reachability data hung off the entity, never
-                // part of its identity (SPEC.md §37).
-                entity.metadata = serde_json::json!({ "addresses": declared.addresses });
+                metadata.insert("addresses".into(), serde_json::json!(declared.addresses));
+            }
+            if !declared.ports.is_empty() {
+                metadata.insert("ports".into(), serde_json::json!(declared.ports));
+            }
+            if !metadata.is_empty() {
+                entity.metadata = serde_json::Value::Object(metadata);
             }
 
             snapshot.add_entity(entity);
@@ -132,6 +139,41 @@ mod tests {
         assert_eq!(entity.labels.get("rack").unwrap(), "r01");
         assert_eq!(entity.metadata["addresses"][0], "192.0.2.10");
         assert_eq!(entity.discovery_sources, vec![DiscoverySource::StaticConfig]);
+    }
+
+    #[test]
+    fn non_default_ports_are_carried_into_metadata() {
+        // Without this a host whose SSH runs on 2222 would be probed on 22 and
+        // reported down, which is a fault Sentinel would have invented.
+        let snapshot = provider(
+            r#"
+            config_version = 1
+            environment = "lab"
+
+            [[entities]]
+            type = "host"
+            name = "fileserver-a"
+            addresses = ["192.0.2.10"]
+            ports = { ssh = 2222, nfs = 2049 }
+            "#,
+        )
+        .snapshot();
+
+        let entity = &snapshot.entities[0];
+        assert_eq!(entity.metadata["ports"]["ssh"], 2222);
+        assert_eq!(entity.metadata["ports"]["nfs"], 2049);
+    }
+
+    #[test]
+    fn ports_do_not_affect_identity() {
+        let with = provider(
+            "config_version = 1\nenvironment = \"lab\"\n[[entities]]\ntype = \"host\"\nname = \"a\"\nports = { ssh = 2222 }\n",
+        )
+        .snapshot();
+        let without =
+            provider("config_version = 1\nenvironment = \"lab\"\n[[entities]]\ntype = \"host\"\nname = \"a\"\n")
+                .snapshot();
+        assert_eq!(with.entities[0].id, without.entities[0].id);
     }
 
     #[test]
@@ -212,6 +254,7 @@ mod tests {
                 labels: Default::default(),
                 capabilities: vec![],
                 addresses: vec![],
+                ports: Default::default(),
             }],
             ..Config::default()
         };

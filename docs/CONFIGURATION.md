@@ -81,6 +81,18 @@ enabled = true
 | `controller_address` | `host:port` | *(なし)* | 報告先 controller |
 | `spool_path` | path | `<state dir>/spool.db` | ローカル observation spool |
 | `roles` | 文字列配列 | `[]` | grouping と default 提示のみに使うラベル |
+| `listen` | `host:port` | `0.0.0.0:7444` | health endpoint の待受。peer がここを見る |
+| `ssh_port` | 整数 | *(sshd_config から検出)* | SSH ポート。自動検出できない場合のみ |
+
+`ssh_port` の優先順位:
+
+```text
+[agent] ssh_port  >  /etc/ssh/sshd_config の Port  >  既定値 22
+```
+
+通常は agent が `sshd_config` を読んで検出し、controller へ報告するため、
+指定は不要です。`listen` を変更した場合も agent が自分で報告するため、
+controller 側への追記は必要ありません。
 
 `roles` は probe を有効化しません。後述の「Capability」を参照してください。
 
@@ -147,7 +159,23 @@ name = "shared-a"
 `type` は `host` / `service` / `storage` / `scheduler` / `external_dependency` のいずれか。
 
 `name` は canonical name であり、`(environment, type)` 内で一意です。
-address は到達性のためのデータであり identity ではありません — 1 entity が複数持てます。
+address と port は到達性のためのデータであり identity ではありません
+— 1 entity が複数 address を持てますし、port を変えても同じ entity です。
+
+`ports` は **agent がいない host** に必要です。
+agent がいる host は自分でポートを報告します。
+
+```toml
+[[entities]]
+type = "host"
+name = "fileserver-a"
+addresses = ["192.0.2.10"]
+ports = { ssh = 2222, agent = 9444 }
+```
+
+指定しない場合は既定値（ssh 22 / agent 7444 / nfs 2049）が使われます。
+SSH を 22 以外で運用しているクラスタでこれを書き忘れると、
+probe が閉じたポートを叩き、**全 host が SSH 障害として報告されます。**
 
 ### `[[dependencies]]`
 

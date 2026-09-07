@@ -11,6 +11,10 @@ Cluster Sentinel を実際に運用するためのガイドです。
 
 ## 導入
 
+実クラスタへの導入手順は [DEPLOYMENT.md](DEPLOYMENT.md) に、
+コピーして使える設定テンプレートは [templates/](templates/) にあります。
+以下は要約です。
+
 ### 1. バイナリの配置
 
 ```bash

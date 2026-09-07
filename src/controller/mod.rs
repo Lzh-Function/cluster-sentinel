@@ -267,6 +267,7 @@ mod tests {
             labels: Default::default(),
             capabilities: vec![],
             addresses: vec![],
+            ports: Default::default(),
         });
 
         let controller = Controller::new(config, store().await).await.expect("controller");

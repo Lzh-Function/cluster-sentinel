@@ -234,6 +234,13 @@ pub struct AgentConfig {
     /// Roles, used only for UI grouping and default hints (SPEC.md §14, §15).
     #[serde(default)]
     pub roles: Vec<String>,
+    /// The port `sshd` listens on, when it is not the default and cannot be
+    /// read from `sshd_config`.
+    ///
+    /// The agent reads `/etc/ssh/sshd_config` for this, so it is only needed
+    /// where that file is unreadable or the port is set elsewhere.
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
     /// Address the agent's health endpoint listens on.
     ///
     /// This is what lets a peer or the controller tell "the agent is dead"
@@ -252,6 +259,7 @@ impl Default for AgentConfig {
             controller_address: None,
             spool_path: None,
             roles: Vec::new(),
+            ssh_port: None,
             listen: default_agent_listen(),
         }
     }
@@ -374,6 +382,12 @@ pub struct EntityConfig {
     /// Addresses to reach this entity at. Never used as identity.
     #[serde(default)]
     pub addresses: Vec<String>,
+    /// Non-default ports, by service name (`ssh`, `agent`, `nfs`).
+    ///
+    /// Needed for entities with no agent to report for themselves: without it
+    /// a host whose SSH runs on 2222 would be probed on 22 and reported down.
+    #[serde(default)]
+    pub ports: BTreeMap<String, u16>,
 }
 
 /// A statically declared dependency edge.
