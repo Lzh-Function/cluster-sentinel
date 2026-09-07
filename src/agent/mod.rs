@@ -12,10 +12,13 @@
 
 pub mod client;
 pub mod discovery;
+pub mod local_probes;
+pub mod rpc;
 pub mod spool;
 pub mod system;
 
 pub use client::{ClientError, ControllerClient};
+pub use local_probes::LocalProbes;
 pub use spool::{Spool, SpoolLimits};
 pub use system::{LinuxInspector, SystemInspector};
 
@@ -26,6 +29,7 @@ use uuid::Uuid;
 
 use crate::capability::CapabilitySet;
 use crate::config::Config;
+use crate::entity::{EntityKey, EntityType};
 use crate::observation::Observation;
 use crate::protocol::{HeartbeatRequest, ObservationBatch, RegisterRequest};
 use crate::time::now;
@@ -64,6 +68,11 @@ pub struct Agent {
     capabilities: CapabilitySet,
     roles: Vec<String>,
     status: AgentStatus,
+    local_probes: LocalProbes,
+    started_at: std::time::Instant,
+    /// Mirrors `status.registered` so the health endpoint can read it without
+    /// touching the agent.
+    registered_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Agent {
@@ -83,17 +92,95 @@ impl Agent {
             .ok_or_else(|| anyhow::anyhow!("cannot determine this host's name; refusing to guess"))?;
 
         let resolution = discovery::resolve(inspector.as_ref(), &config.capabilities, &config.agent.roles);
+        let capabilities = resolution.enabled;
+
+        // The agent computes its own entity id from the natural key, so it can
+        // label observations correctly before it has ever spoken to a
+        // controller (see docs/adr/0001).
+        let entity = EntityKey::new(&config.environment, EntityType::Host, &hostname).entity_id();
 
         Ok(Self {
             environment: config.environment.clone(),
+            local_probes: LocalProbes::new(entity, capabilities.clone()),
             hostname,
             inspector,
             client,
             spool,
-            capabilities: resolution.enabled,
+            capabilities,
             roles: config.agent.roles.clone(),
             status: AgentStatus::default(),
+            started_at: std::time::Instant::now(),
+            registered_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
+    }
+
+    /// A handle the health endpoint can read without locking the agent.
+    pub fn health_handle(&self) -> rpc::AgentHealthHandle {
+        rpc::AgentHealthHandle {
+            environment: self.environment.clone(),
+            hostname: self.hostname.clone(),
+            inspector: Arc::clone(&self.inspector),
+            capabilities: self.capabilities.clone(),
+            spool: self.spool.clone(),
+            registered: Arc::clone(&self.registered_flag),
+            started_at: self.started_at,
+        }
+    }
+
+    fn set_registered(&mut self, registered: bool) {
+        self.status.registered = registered;
+        self.registered_flag
+            .store(registered, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The entity id this agent reports for.
+    pub fn entity_id(&self) -> crate::entity::EntityId {
+        EntityKey::new(&self.environment, EntityType::Host, &self.hostname).entity_id()
+    }
+
+    /// The local probes scheduled on this host.
+    pub fn local_probes(&self) -> &LocalProbes {
+        &self.local_probes
+    }
+
+    /// Run any local probes that are due, and record what they found.
+    ///
+    /// Probes are jittered, so immediately after startup nothing is due yet.
+    /// That is deliberate: a fleet restarted together must not arrive at the
+    /// controller in one burst (SPEC.md §123).
+    pub async fn probe_once(&mut self) -> anyhow::Result<usize> {
+        let observations = self.local_probes.run_due().await;
+        self.record_probe_results(observations).await
+    }
+
+    /// Run every local probe now, ignoring the schedule.
+    ///
+    /// For `sentinel doctor` and for tests, which should not have to wait out
+    /// a jitter interval to see whether probing works.
+    pub async fn probe_now(&mut self) -> anyhow::Result<usize> {
+        let observations = self.local_probes.run_all().await;
+        self.record_probe_results(observations).await
+    }
+
+    async fn record_probe_results(&mut self, observations: Vec<Observation>) -> anyhow::Result<usize> {
+        let count = observations.len();
+        if !observations.is_empty() {
+            self.record(&observations).await?;
+        }
+        Ok(count)
+    }
+
+    /// A health snapshot for the agent's own RPC endpoint.
+    pub async fn health(&self) -> rpc::AgentHealth {
+        rpc::health_snapshot(
+            &self.environment,
+            &self.hostname,
+            self.inspector.boot_id(),
+            self.capabilities.clone(),
+            self.started_at,
+            self.spool.len().await.unwrap_or(0),
+            self.status.registered,
+        )
     }
 
     /// The host name this agent reports as.
@@ -142,7 +229,7 @@ impl Agent {
     pub async fn register(&mut self) -> Result<(), ClientError> {
         match self.client.register(&self.registration()).await {
             Ok(response) => {
-                self.status.registered = true;
+                self.set_registered(true);
                 self.status.agent_id = Some(response.agent_id);
                 self.status.session_id = Some(response.session_id);
                 self.status.last_error = None;
@@ -155,7 +242,7 @@ impl Agent {
                 Ok(())
             }
             Err(error) => {
-                self.status.registered = false;
+                self.set_registered(false);
                 self.status.last_error = Some(error.to_string());
                 Err(error)
             }
@@ -190,7 +277,7 @@ impl Agent {
             Err(error) => {
                 self.status.last_error = Some(error.to_string());
                 if !error.is_transient() {
-                    self.status.registered = false;
+                    self.set_registered(false);
                 }
                 Err(error)
             }
@@ -271,10 +358,10 @@ impl Agent {
         Ok(delivered)
     }
 
-    /// Run until cancelled: register, then heartbeat and flush on a schedule.
+    /// Run until cancelled: register, then probe, heartbeat and flush.
     pub async fn run(&mut self, heartbeat_interval: Duration, shutdown: tokio::sync::oneshot::Receiver<()>) {
         // A failed first registration is not fatal: the controller may simply
-        // not be up yet, and the agent must keep trying while spooling.
+        // not be up yet, and the agent must keep observing and spooling.
         if let Err(error) = self.register().await {
             tracing::warn!(%error, "initial registration failed; will retry");
         }
@@ -286,6 +373,11 @@ impl Agent {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    // Probing comes first: observations are worth collecting
+                    // even in the turn where the controller is unreachable.
+                    if let Err(error) = self.probe_once().await {
+                        tracing::warn!(%error, "local probes failed");
+                    }
                     if let Err(error) = self.heartbeat().await {
                         tracing::debug!(%error, "heartbeat failed");
                     }
@@ -322,6 +414,7 @@ mod tests {
                 controller_address: None,
                 spool_path: None,
                 roles,
+                ..Default::default()
             },
             ..Config::default()
         }

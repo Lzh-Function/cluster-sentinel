@@ -55,6 +55,7 @@ async fn build_agent(address: &str, inspector: FakeInspector, spool: Spool) -> A
         controller_address: Some(address.into()),
         spool_path: None,
         roles: vec![],
+        ..Default::default()
     };
 
     Agent::new(

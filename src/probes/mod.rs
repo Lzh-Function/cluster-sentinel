@@ -6,6 +6,15 @@
 //!
 //! Concrete probes live in submodules; the core only knows this interface.
 
+pub mod host;
+pub mod network;
+mod runner;
+pub mod sentinel_rpc;
+pub mod ssh;
+pub mod systemd;
+
+pub use runner::{ProbeRunner, Skipped};
+
 use std::fmt;
 use std::time::Duration;
 

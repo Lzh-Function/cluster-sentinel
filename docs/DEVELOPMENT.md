@@ -119,6 +119,21 @@ dev/compose/    Docker 疑似クラスタ（M3 以降）
 * `src/` に host 名・address・partition 名・storage topology を書きません。
   fixture・設定・テストが正しい置き場所です。
 
+## 実装済みの probe
+
+| Probe ID | 観測対象 | 必要 capability | 実行場所 |
+| --- | --- | --- | --- |
+| `host.metrics` | load / memory / pressure / uptime / boot ID | `host.metrics` | local |
+| `network.tcp` | host への到達性 | `network.tcp` | local / remote |
+| `ssh.service` | SSH banner | `ssh.server` | local / remote |
+| `sentinel.agent` | agent の health endpoint | `sentinel.agent` | **remote のみ** |
+| `systemd.unit` | systemd unit の状態 | `systemd` | local |
+| `slurm.node` | scheduler から見た node 状態 | （Slurm discovery） | controller |
+| `slurm.controller` | control plane の到達性 | （Slurm discovery） | controller |
+
+`sentinel.agent` が remote のみなのは、
+自分自身に「動いているか」を尋ねても Yes 以外を返し得ないためです。
+
 ## Probe の追加手順
 
 1. Capability 名を決める（広く有用なら `src/capability/mod.rs::well_known` へ。

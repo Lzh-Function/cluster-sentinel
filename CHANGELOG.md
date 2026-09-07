@@ -5,6 +5,26 @@
 
 ## 未リリース
 
+### M4 — Basic Host Monitoring
+
+* Probe runner: timeout、panic 隔離、target ごとの同時実行数制限。
+  probe の panic が daemon を落とさないことをテストで検証。
+* Probe 実装:
+  * `host.metrics` — `/proc` から load / memory / pressure / uptime / boot ID。
+    負荷は degraded であって failed ではない（計算 node は負荷が仕事）。
+  * `network.tcp` — 到達性。**refusal は到達可能の証拠**（ADR 0004）。
+  * `ssh.service` — banner 確認のみ。認証も remote 実行も行わない。
+  * `systemd.unit` — `systemctl show` による read-only な状態取得。
+  * `sentinel.agent` — peer から agent の health endpoint を確認。
+* Agent の health endpoint（`/v1/agent/health`）。read-only、GET のみ。
+  agent 本体をロックせずに応答するため、probe が遅くても peer から見える。
+* Agent 側 local probe scheduler（probe ごとの interval と jitter）。
+* Controller が observer として remote probe を実行。observation には observer を記録。
+* State component（host / network / ssh / agent / service）への mapping。
+  未 mapping の probe が生まれないことをテストで強制。
+* 疑似クラスタで検証: agent 停止と sshd 停止が、
+  それぞれ独立した component 異常として観測されること。
+
 ### M3 — Docker Compose 疑似クラスタ
 
 * 6 container（controller 1 / compute 3 / fileserver 2）の疑似クラスタ。

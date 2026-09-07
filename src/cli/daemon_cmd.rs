@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::agent::rpc::{self, RpcState};
 use crate::agent::{Agent, ControllerClient, LinuxInspector, Spool, SpoolLimits};
 use crate::config::{Config, DEFAULT_STATE_DIR};
 use crate::controller::{serve, Controller, ServeOptions};
@@ -128,14 +129,23 @@ pub async fn agent(cli: &Cli) -> anyhow::Result<i32> {
 
     let client = ControllerClient::new(&address, &credential, Duration::from_secs(10))?;
     let spool = Spool::open(&spool_path, SpoolLimits::default()).await?;
-    let mut agent = Agent::new(&config, Arc::new(LinuxInspector::new()), client, spool)?;
+    let inspector = Arc::new(LinuxInspector::new());
+    let mut agent = Agent::new(&config, inspector, client, spool)?;
 
     tracing::info!(
         hostname = agent.hostname(),
         controller = %address,
         capabilities = agent.capabilities().len(),
+        probes = agent.local_probes().len(),
         "agent starting"
     );
+
+    // The health endpoint is what lets a peer tell "the agent is dead" from
+    // "the host is dead", so it comes up before anything else and keeps
+    // answering even when the controller is unreachable (SPEC.md §61). It reads
+    // its own handles rather than the agent, so a slow probe cannot stall it.
+    let rpc = rpc::serve(&config.agent.listen, RpcState::new(Arc::new(agent.health_handle()))).await?;
+    tracing::info!(address = %rpc.local_addr, "agent health endpoint listening");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let signal = tokio::spawn(async move {
@@ -145,6 +155,7 @@ pub async fn agent(cli: &Cli) -> anyhow::Result<i32> {
 
     agent.run(HEARTBEAT_INTERVAL, shutdown_rx).await;
     signal.abort();
+    rpc.shutdown().await;
     agent.spool().close().await;
     tracing::info!("agent stopped");
     Ok(0)

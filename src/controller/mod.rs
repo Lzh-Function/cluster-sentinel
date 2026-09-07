@@ -12,11 +12,13 @@
 pub mod agents;
 pub mod api;
 mod discovery;
+pub mod observer;
 pub mod registration;
 mod server;
 
 pub use agents::{AgentRegistry, AgentSession, RegistrationKind};
 pub use discovery::{DiscoveryReport, ProviderReport};
+pub use observer::{endpoint_for, Endpoint, RemoteObserver};
 pub use registration::{snapshot_from_registration, Registration};
 pub use server::{serve, ServeOptions, ServerHandle};
 
@@ -28,7 +30,7 @@ use crate::inventory::slurm::SlurmInventoryProvider;
 use crate::inventory::static_config::StaticConfigProvider;
 use crate::inventory::InventoryProvider;
 use crate::persistence::{SqliteStore, StoreError};
-use crate::state::{ProbeMapping, StateComponent, StateEngine};
+use crate::state::{DebouncePolicy, ProbeMapping, StateComponent, StateEngine};
 
 /// Name used for the scheduler entity when configuration does not name a
 /// cluster. Deliberately generic: no deployment identifier belongs here.
@@ -127,6 +129,40 @@ pub fn register_builtin_probes(engine: &mut StateEngine) {
         observe::PROBE_CONTROLLER,
         ProbeMapping::immediate(StateComponent::Service),
     );
+
+    // Network-facing probes are measurements, not statements, so they debounce:
+    // one dropped packet is not an outage (SPEC.md §90).
+    engine.register(
+        crate::probes::network::PROBE_ID,
+        ProbeMapping::new(StateComponent::Network),
+    );
+    engine.register(crate::probes::ssh::PROBE_ID, ProbeMapping::new(StateComponent::Ssh));
+    engine.register(
+        crate::probes::sentinel_rpc::PROBE_ID,
+        ProbeMapping::new(StateComponent::Agent),
+    );
+    engine.register(
+        crate::probes::systemd::PROBE_ID,
+        ProbeMapping::new(StateComponent::Service),
+    );
+
+    // Host metrics are sampled locally and are noisy by nature. A transient
+    // load spike must not move the host's state, so this needs more agreement
+    // than a connection failure does.
+    engine.register(
+        crate::probes::host::PROBE_ID,
+        ProbeMapping::new(StateComponent::Host).with_policy(DebouncePolicy {
+            warning_threshold: 3,
+            critical_threshold: 5,
+            recovery_threshold: 2,
+        }),
+    );
+
+    // A reboot is a recorded fact about the host, and it is not a fault.
+    engine.register(
+        crate::controller::registration::PROBE_BOOT,
+        ProbeMapping::immediate(StateComponent::Host),
+    );
 }
 
 #[cfg(test)]
@@ -199,11 +235,66 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_probes_are_registered_with_the_state_engine() {
+    fn every_builtin_probe_is_mapped_to_a_state_component() {
+        // A probe the engine does not know about produces observations that
+        // change nothing, which is a silent failure. This is the list that
+        // stops one being added without a mapping.
         let mut engine = StateEngine::new();
         register_builtin_probes(&mut engine);
-        assert!(engine.knows(&ProbeId::new(observe::PROBE_NODE)));
-        assert!(engine.knows(&ProbeId::new(observe::PROBE_CONTROLLER)));
+
+        for probe in [
+            observe::PROBE_NODE,
+            observe::PROBE_CONTROLLER,
+            crate::probes::network::PROBE_ID,
+            crate::probes::ssh::PROBE_ID,
+            crate::probes::sentinel_rpc::PROBE_ID,
+            crate::probes::systemd::PROBE_ID,
+            crate::probes::host::PROBE_ID,
+            crate::controller::registration::PROBE_BOOT,
+        ] {
+            assert!(engine.knows(&ProbeId::new(probe)), "{probe} has no state mapping");
+        }
+
         assert!(!engine.knows(&ProbeId::new("never.registered")));
+    }
+
+    #[test]
+    fn the_agent_ssh_and_network_components_are_kept_separate() {
+        // Telling these apart is the whole point of M4: an agent failure, an
+        // SSH failure and an unreachable host must not collapse into one state.
+        let mut engine = StateEngine::new();
+        register_builtin_probes(&mut engine);
+
+        let entity = crate::entity::EntityKey::new("lab", crate::entity::EntityType::Host, "node-a").entity_id();
+        let observe_failure = |engine: &mut StateEngine, probe: &str| {
+            for _ in 0..3 {
+                engine.ingest(&crate::observation::Observation::new(
+                    ProbeId::new(probe),
+                    entity,
+                    crate::observation::ProbeStatus::Failed,
+                ));
+            }
+        };
+        let observe_ok = |engine: &mut StateEngine, probe: &str| {
+            for _ in 0..3 {
+                engine.ingest(&crate::observation::Observation::new(
+                    ProbeId::new(probe),
+                    entity,
+                    crate::observation::ProbeStatus::Ok,
+                ));
+            }
+        };
+
+        observe_failure(&mut engine, crate::probes::sentinel_rpc::PROBE_ID);
+        observe_ok(&mut engine, crate::probes::ssh::PROBE_ID);
+        observe_ok(&mut engine, crate::probes::network::PROBE_ID);
+
+        let state = engine.state(entity).expect("state");
+        assert_eq!(
+            state.component(StateComponent::Agent),
+            crate::state::Health::Unavailable
+        );
+        assert_eq!(state.component(StateComponent::Ssh), crate::state::Health::Healthy);
+        assert_eq!(state.component(StateComponent::Network), crate::state::Health::Healthy);
     }
 }

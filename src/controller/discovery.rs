@@ -14,7 +14,7 @@ use crate::observation::Observation;
 use crate::persistence::StoreError;
 use crate::state::StateTransition;
 
-use super::Controller;
+use super::{Controller, RemoteObserver};
 
 /// What one provider contributed to a cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +104,12 @@ impl Controller {
                 }
             }
         }
+
+        // The controller is itself an observer: it probes reachability, SSH and
+        // agent health from where it stands. One viewpoint is not enough to
+        // call a host dead, which is why these observations carry an observer
+        // and the diagnosis engine weighs them together (SPEC.md §50).
+        observations.extend(RemoteObserver::new().observe_all(inventory.entities()).await);
 
         // Slurm contributes observations as well as inventory: what the
         // scheduler believes about each node is itself a fact worth recording.

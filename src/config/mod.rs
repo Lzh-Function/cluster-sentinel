@@ -198,7 +198,7 @@ impl Default for ControllerConfig {
 }
 
 /// Agent settings.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// Controller address to report to, e.g. `controller.example:7443`.
@@ -213,6 +213,27 @@ pub struct AgentConfig {
     /// Roles, used only for UI grouping and default hints (SPEC.md §14, §15).
     #[serde(default)]
     pub roles: Vec<String>,
+    /// Address the agent's health endpoint listens on.
+    ///
+    /// This is what lets a peer or the controller tell "the agent is dead"
+    /// from "the host is dead" (SPEC.md §61).
+    #[serde(default = "default_agent_listen")]
+    pub listen: String,
+}
+
+fn default_agent_listen() -> String {
+    format!("0.0.0.0:{}", crate::agent::rpc::DEFAULT_PORT)
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            controller_address: None,
+            spool_path: None,
+            roles: Vec::new(),
+            listen: default_agent_listen(),
+        }
+    }
 }
 
 /// Database settings.
@@ -454,5 +475,12 @@ mod tests {
     fn no_controller_host_is_baked_into_the_defaults() {
         let config = Config::default();
         assert_eq!(config.agent.controller_address, None);
+    }
+
+    #[test]
+    fn the_agent_listens_on_all_interfaces_by_default() {
+        // A peer has to be able to reach it, so loopback would defeat the point.
+        let config = Config::default();
+        assert!(config.agent.listen.starts_with("0.0.0.0:"), "{}", config.agent.listen);
     }
 }
