@@ -134,6 +134,7 @@ dev/compose/    Docker 疑似クラスタ（M3 以降）
 | `nfs.client.io` | mount への実 I/O 応答性 | `storage.nfs.client` | local（**mount ごとに同時 1**） |
 | `nfs.server.port` | export port の応答 | `storage.nfs.server` | local / remote |
 | `nfs.server.exports` | export 一覧 | `storage.nfs.server` | local |
+| `gpu.nvidia` | GPU 一覧・温度・メモリ | `gpu.nvidia` | local |
 
 ### NFS probe の安全性
 

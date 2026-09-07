@@ -6,6 +6,7 @@
 //!
 //! Concrete probes live in submodules; the core only knows this interface.
 
+pub mod gpu;
 pub mod host;
 pub mod network;
 pub mod nfs;

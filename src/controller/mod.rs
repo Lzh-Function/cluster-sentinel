@@ -174,6 +174,11 @@ pub fn register_builtin_probes(engine: &mut StateEngine) {
         engine.register(probe, ProbeMapping::new(StateComponent::Storage));
     }
 
+    engine.register(
+        crate::probes::gpu::PROBE_ID,
+        ProbeMapping::new(StateComponent::Accelerator),
+    );
+
     // A reboot is a recorded fact about the host, and it is not a fault.
     engine.register(
         crate::controller::registration::PROBE_BOOT,
@@ -271,6 +276,7 @@ mod tests {
             crate::probes::nfs::PROBE_CLIENT_IO,
             crate::probes::nfs::PROBE_SERVER_PORT,
             crate::probes::nfs::PROBE_SERVER_EXPORTS,
+            crate::probes::gpu::PROBE_ID,
         ] {
             assert!(engine.knows(&ProbeId::new(probe)), "{probe} has no state mapping");
         }

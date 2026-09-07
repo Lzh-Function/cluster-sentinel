@@ -5,6 +5,17 @@
 
 ## 未リリース
 
+### M7 — GPU
+
+* `gpu.nvidia` probe（`nvidia-smi` の CSV 出力を parse）。
+  `[N/A]` / `[Not Supported]` を parse 失敗ではなく「値なし」として扱う。
+* Agent は probe が実際に観測した GPU 数を registration へ反映する。
+  capability（GPU を持ち得る）と観測結果（GPU が 2 枚ある）を混同しない。
+* GPU 数の不一致は degraded として報告し、node を broken とは呼ばない。
+  Slurm に GRES 行が無い場合は「不一致」ではなく「未記載」として扱う。
+* GPU の状態を変更する `nvidia-smi` オプションを使わないことをテストで強制。
+* 実 GPU の検証は level 4（VM / 実クラスタ）。container では mock のみ。
+
 ### M6 — Storage / NFS
 
 * NFS probe を危険度で分割:

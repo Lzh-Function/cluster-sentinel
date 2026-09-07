@@ -40,6 +40,13 @@ use crate::PROTOCOL_VERSION;
 /// Per mount rather than per host, so each gets its own concurrency slot: one
 /// wedged filesystem must not stop the others being checked, and it must not
 /// accumulate a blocked thread every interval (SPEC.md §76).
+fn schedule_accelerator_probes(local: &mut LocalProbes) {
+    local.add(
+        Arc::new(crate::probes::gpu::NvidiaGpuProbe::new()),
+        serde_json::Value::Null,
+    );
+}
+
 fn schedule_storage_probes(local: &mut LocalProbes, inspector: &dyn SystemInspector) {
     use crate::probes::nfs::{NfsClientIoProbe, NfsMountProbe};
 
@@ -98,6 +105,8 @@ pub struct Agent {
     /// Mirrors `status.registered` so the health endpoint can read it without
     /// touching the agent.
     registered_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// GPUs the probe has actually seen, if it has run.
+    observed_gpu_count: Option<u64>,
 }
 
 impl Agent {
@@ -126,6 +135,7 @@ impl Agent {
 
         let mut local_probes = LocalProbes::new(entity, capabilities.clone());
         schedule_storage_probes(&mut local_probes, inspector.as_ref());
+        schedule_accelerator_probes(&mut local_probes);
 
         Ok(Self {
             environment: config.environment.clone(),
@@ -139,7 +149,13 @@ impl Agent {
             status: AgentStatus::default(),
             started_at: std::time::Instant::now(),
             registered_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            observed_gpu_count: None,
         })
+    }
+
+    /// GPUs this agent has observed, if the probe has run.
+    pub fn observed_gpu_count(&self) -> Option<u64> {
+        self.observed_gpu_count
     }
 
     /// A handle the health endpoint can read without locking the agent.
@@ -191,6 +207,16 @@ impl Agent {
     }
 
     async fn record_probe_results(&mut self, observations: Vec<Observation>) -> anyhow::Result<usize> {
+        // Learn the real GPU count from the probe, so the next registration
+        // reports hardware rather than an assumption.
+        for observation in &observations {
+            if observation.probe_id.as_str() == crate::probes::gpu::PROBE_ID {
+                if let Some(count) = observation.payload.get("gpu_count").and_then(|v| v.as_u64()) {
+                    self.observed_gpu_count = Some(count);
+                }
+            }
+        }
+
         let count = observations.len();
         if !observations.is_empty() {
             self.record(&observations).await?;
