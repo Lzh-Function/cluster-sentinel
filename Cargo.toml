@@ -27,6 +27,11 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process", "signal", "sync", "io-util"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tower = "0.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+hostname = "0.4"
+if-addrs = "0.13"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono", "uuid"] }
 async-trait = "0.1"
 humantime-serde = "1"

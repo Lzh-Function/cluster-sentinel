@@ -1,0 +1,290 @@
+//! Runtime capability discovery (SPEC.md §18, §39).
+//!
+//! The agent works out what this machine *can do*, and the answer decides which
+//! probes run. Two properties matter:
+//!
+//! * Discovery reports both presence and **absence**. "I looked and there is no
+//!   `slurmd`" is a different answer from "I did not look", and only the former
+//!   may override a role hint.
+//! * Nothing here executes anything. Detection reads the filesystem and
+//!   `/proc`, which is safe even when an NFS mount is hung.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use crate::capability::{
+    resolve_capabilities, well_known, Capability, CapabilityOverride, DiscoveryOutcome, Resolution,
+};
+
+use super::system::{HardwareSummary, SystemInspector};
+
+/// What a role suggests, when nothing better is known.
+///
+/// These are *hints only*. A role never enables a probe on its own; see
+/// `capability::resolve` for the precedence that enforces this.
+pub fn role_hints(role: &str) -> BTreeSet<Capability> {
+    let names: &[&str] = match role {
+        "controller" => &[well_known::SLURM_CONTROLLER, well_known::OBSERVER_PEER],
+        "compute" => &[well_known::SLURM_COMPUTE],
+        "fileserver" => &[well_known::STORAGE_NFS_SERVER, well_known::OBSERVER_PEER],
+        "observer" => &[well_known::OBSERVER_PEER],
+        "login" => &[well_known::SSH_SERVER],
+        _ => &[],
+    };
+    names.iter().map(|n| Capability::new(*n)).collect()
+}
+
+/// Detect what this machine can do.
+///
+/// Returns an outcome per capability considered — including the negatives,
+/// which is what lets a real look override a role's guess.
+pub fn detect(inspector: &dyn SystemInspector) -> BTreeMap<Capability, DiscoveryOutcome> {
+    let mut found = BTreeMap::new();
+    let mut record = |name: &str, present: bool| {
+        found.insert(
+            Capability::new(name),
+            if present {
+                DiscoveryOutcome::Detected
+            } else {
+                DiscoveryOutcome::NotDetected
+            },
+        );
+    };
+
+    // An agent that is running can always report on its own host.
+    record(well_known::HOST_METRICS, true);
+    record(well_known::SENTINEL_AGENT, true);
+    record(well_known::NETWORK_TCP, true);
+
+    let systemd = inspector.path_exists(Path::new("/run/systemd/system"));
+    record(well_known::SYSTEMD, systemd);
+    record(
+        well_known::JOURNAL_READ,
+        systemd && inspector.which("journalctl").is_some(),
+    );
+
+    record(
+        well_known::SSH_SERVER,
+        inspector.path_exists(Path::new("/etc/ssh/sshd_config")) || inspector.which("sshd").is_some(),
+    );
+
+    record(well_known::SLURM_COMPUTE, inspector.which("slurmd").is_some());
+    record(well_known::SLURM_CONTROLLER, inspector.which("slurmctld").is_some());
+
+    record(well_known::GPU_NVIDIA, inspector.which("nvidia-smi").is_some());
+
+    let mounts = inspector.mounts();
+    record(well_known::STORAGE_NFS_CLIENT, mounts.iter().any(|m| m.is_nfs()));
+    record(
+        well_known::STORAGE_NFS_SERVER,
+        inspector.path_exists(Path::new("/etc/exports")) || inspector.which("exportfs").is_some(),
+    );
+    record(well_known::STORAGE_ZFS, inspector.which("zpool").is_some());
+    record(well_known::STORAGE_SMART, inspector.which("smartctl").is_some());
+    record(well_known::STORAGE_LOCAL, true);
+
+    found
+}
+
+/// Detect, then apply the operator's overrides and any role hints.
+pub fn resolve(
+    inspector: &dyn SystemInspector,
+    overrides: &BTreeMap<String, CapabilityOverride>,
+    roles: &[String],
+) -> Resolution {
+    let detected = detect(inspector);
+    let overrides: BTreeMap<Capability, CapabilityOverride> = overrides
+        .iter()
+        .map(|(name, value)| (Capability::new(name), *value))
+        .collect();
+    let hints: BTreeSet<Capability> = roles.iter().flat_map(|role| role_hints(role)).collect();
+
+    resolve_capabilities(&detected, &overrides, &hints)
+}
+
+/// Hardware summary, with the GPU count filled in from what was detected.
+pub fn hardware(inspector: &dyn SystemInspector, gpu_count: Option<u32>) -> HardwareSummary {
+    HardwareSummary {
+        gpus: gpu_count,
+        ..inspector.hardware()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::system::FakeInspector;
+
+    fn outcome(found: &BTreeMap<Capability, DiscoveryOutcome>, name: &str) -> Option<DiscoveryOutcome> {
+        found.get(&Capability::new(name)).copied()
+    }
+
+    #[test]
+    fn a_bare_host_reports_only_what_any_running_agent_can_do() {
+        let found = detect(&FakeInspector::bare());
+
+        assert_eq!(
+            outcome(&found, well_known::HOST_METRICS),
+            Some(DiscoveryOutcome::Detected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::SENTINEL_AGENT),
+            Some(DiscoveryOutcome::Detected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::SLURM_COMPUTE),
+            Some(DiscoveryOutcome::NotDetected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::GPU_NVIDIA),
+            Some(DiscoveryOutcome::NotDetected)
+        );
+    }
+
+    #[test]
+    fn absence_is_reported_explicitly_rather_than_omitted() {
+        // The difference between "looked, not there" and "did not look" is what
+        // lets discovery overrule a role hint.
+        let found = detect(&FakeInspector::bare());
+        assert_eq!(
+            outcome(&found, well_known::STORAGE_NFS_SERVER),
+            Some(DiscoveryOutcome::NotDetected),
+            "a negative must be recorded, not left out"
+        );
+    }
+
+    #[test]
+    fn a_compute_node_is_recognised_by_what_is_installed() {
+        let found = detect(&FakeInspector::bare().with_program("slurmd").with_program("nvidia-smi"));
+        assert_eq!(
+            outcome(&found, well_known::SLURM_COMPUTE),
+            Some(DiscoveryOutcome::Detected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::GPU_NVIDIA),
+            Some(DiscoveryOutcome::Detected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::SLURM_CONTROLLER),
+            Some(DiscoveryOutcome::NotDetected)
+        );
+    }
+
+    #[test]
+    fn a_fileserver_is_recognised_by_its_exports() {
+        let found = detect(&FakeInspector::bare().with_path("/etc/exports").with_program("zpool"));
+        assert_eq!(
+            outcome(&found, well_known::STORAGE_NFS_SERVER),
+            Some(DiscoveryOutcome::Detected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::STORAGE_ZFS),
+            Some(DiscoveryOutcome::Detected)
+        );
+    }
+
+    #[test]
+    fn an_nfs_client_is_recognised_by_its_mounts() {
+        let found = detect(&FakeInspector::bare().with_mount("fileserver:/export", "/home", "nfs4"));
+        assert_eq!(
+            outcome(&found, well_known::STORAGE_NFS_CLIENT),
+            Some(DiscoveryOutcome::Detected)
+        );
+        assert_eq!(
+            outcome(&found, well_known::STORAGE_NFS_SERVER),
+            Some(DiscoveryOutcome::NotDetected),
+            "mounting NFS does not make a host a server"
+        );
+    }
+
+    #[test]
+    fn a_local_only_host_is_not_taken_for_an_nfs_client() {
+        let found = detect(&FakeInspector::bare().with_mount("/dev/sda1", "/", "ext4"));
+        assert_eq!(
+            outcome(&found, well_known::STORAGE_NFS_CLIENT),
+            Some(DiscoveryOutcome::NotDetected)
+        );
+    }
+
+    #[test]
+    fn journal_access_needs_both_systemd_and_journalctl() {
+        let neither = detect(&FakeInspector::bare());
+        assert_eq!(
+            outcome(&neither, well_known::JOURNAL_READ),
+            Some(DiscoveryOutcome::NotDetected)
+        );
+
+        let only_binary = detect(&FakeInspector::bare().with_program("journalctl"));
+        assert_eq!(
+            outcome(&only_binary, well_known::JOURNAL_READ),
+            Some(DiscoveryOutcome::NotDetected)
+        );
+
+        let both = detect(
+            &FakeInspector::bare()
+                .with_path("/run/systemd/system")
+                .with_program("journalctl"),
+        );
+        assert_eq!(
+            outcome(&both, well_known::JOURNAL_READ),
+            Some(DiscoveryOutcome::Detected)
+        );
+    }
+
+    #[test]
+    fn a_role_alone_never_enables_a_probe_discovery_ruled_out() {
+        // SPEC.md §15 and §179, at the point where it actually matters.
+        let resolution = resolve(&FakeInspector::bare(), &BTreeMap::new(), &["fileserver".into()]);
+        assert!(
+            !resolution.enabled.has(well_known::STORAGE_NFS_SERVER),
+            "this host exports nothing; calling it a fileserver must not start NFS probes"
+        );
+    }
+
+    #[test]
+    fn a_capability_survives_the_role_label_being_removed() {
+        // The converse of the previous test, and the one SPEC.md §179 names.
+        let inspector = FakeInspector::bare().with_path("/etc/exports");
+        let resolution = resolve(&inspector, &BTreeMap::new(), &[]);
+        assert!(resolution.enabled.has(well_known::STORAGE_NFS_SERVER));
+    }
+
+    #[test]
+    fn an_operator_can_force_a_capability_discovery_missed() {
+        let overrides = BTreeMap::from([(well_known::STORAGE_NFS_SERVER.to_string(), CapabilityOverride::Force)]);
+        let resolution = resolve(&FakeInspector::bare(), &overrides, &[]);
+        assert!(resolution.enabled.has(well_known::STORAGE_NFS_SERVER));
+    }
+
+    #[test]
+    fn an_operator_can_disable_a_capability_discovery_found() {
+        let overrides = BTreeMap::from([(well_known::GPU_NVIDIA.to_string(), CapabilityOverride::Disable)]);
+        let resolution = resolve(&FakeInspector::bare().with_program("nvidia-smi"), &overrides, &[]);
+        assert!(!resolution.enabled.has(well_known::GPU_NVIDIA));
+    }
+
+    #[test]
+    fn a_role_hint_applies_where_discovery_cannot_look() {
+        // `observer.peer` is a policy decision, not a property of the machine,
+        // so nothing detects it and the role hint is the only signal.
+        let resolution = resolve(&FakeInspector::bare(), &BTreeMap::new(), &["observer".into()]);
+        assert!(resolution.enabled.has(well_known::OBSERVER_PEER));
+    }
+
+    #[test]
+    fn an_unknown_role_contributes_nothing_rather_than_failing() {
+        assert!(role_hints("wharf-master").is_empty());
+        let resolution = resolve(&FakeInspector::bare(), &BTreeMap::new(), &["wharf-master".into()]);
+        assert!(
+            resolution.enabled.has(well_known::HOST_METRICS),
+            "discovery still works"
+        );
+    }
+
+    #[test]
+    fn the_gpu_count_is_carried_into_the_hardware_summary() {
+        let summary = hardware(&FakeInspector::bare(), Some(4));
+        assert_eq!(summary.gpus, Some(4));
+        assert_eq!(summary.cpus, Some(8), "the rest of the summary is preserved");
+    }
+}

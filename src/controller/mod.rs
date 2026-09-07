@@ -9,9 +9,16 @@
 //! deployment configuration (SPEC.md §42), and the schema does not assume there
 //! is only one (SPEC.md §43).
 
+pub mod agents;
+pub mod api;
 mod discovery;
+pub mod registration;
+mod server;
 
+pub use agents::{AgentRegistry, AgentSession, RegistrationKind};
 pub use discovery::{DiscoveryReport, ProviderReport};
+pub use registration::{snapshot_from_registration, Registration};
+pub use server::{serve, ServeOptions, ServerHandle};
 
 use std::sync::Arc;
 
@@ -80,6 +87,11 @@ impl Controller {
     /// The state engine.
     pub fn engine(&self) -> &StateEngine {
         &self.engine
+    }
+
+    /// The state engine, mutably.
+    pub fn engine_mut(&mut self) -> &mut StateEngine {
+        &mut self.engine
     }
 
     /// Names of the enabled inventory providers.

@@ -35,7 +35,7 @@ out-of-band な証拠なしにこれを主張しません。
 | --- | --- | --- |
 | M0 | Repository / core domain / config / migration / CLI skeleton | 完了 |
 | M1 | Passive controller、Slurm discovery、`sentinel status` | 完了 |
-| M2 | Agent、protocol、spool | 未着手 |
+| M2 | Agent、protocol、spool | 完了 |
 | M3 | Docker Compose 疑似クラスタ | 未着手 |
 | M4 | Host / network / SSH / agent 監視 | 未着手 |
 | M5 | Slurm 診断 | 未着手 |

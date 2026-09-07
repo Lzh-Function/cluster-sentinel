@@ -5,6 +5,27 @@
 
 ## 未リリース
 
+### M2 — Agent + Protocol
+
+* Wire protocol v1（versioned JSON over HTTP）。binary version と protocol version を分離。
+  未知 field を許容し、controller 更新が fleet 全体を落とさない設計。
+* 認証: cluster-scoped bearer credential。未認証動作は提供しない。
+  credential はファイルまたは環境変数から読み、バイナリへ埋め込まない。
+  比較は constant-time、`Debug` 出力は常に redact。
+* Controller HTTP API: `/v1/health`（無認証）、`/v1/agents/register`、
+  `/v1/agents/heartbeat`、`/v1/observations/batch`。
+  **コマンドを実行する route は存在しない**（テストで検査）。
+* Agent session 管理: boot ID の変化のみを reboot と判定し、
+  agent プロセスの再起動と区別する。
+* Runtime discovery: `SystemInspector` 抽象により、
+  実機に無い構成（GPU node、fileserver 等）に対してもテスト可能。
+  capability の **不在** も明示的に記録し、role hint を上書きできるようにする。
+* Local spool: WAL、age / rows / bytes による上限、順序付き replay、
+  idempotent 再送、重要な行を優先保持。送信前に書く（ADR 0002）。
+* Agent daemon: 登録・heartbeat・spool flush。controller 不在時も動作を継続。
+* CLI: `sentinel controller`、`sentinel agent`、`sentinel doctor`。
+* `docs/SECURITY.md` を追加。
+
 ### M1 — Passive Controller + Slurm
 
 * 共通 external command runner: timeout、出力サイズ上限（truncate 事実の記録）、

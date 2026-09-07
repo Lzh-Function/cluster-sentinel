@@ -4,6 +4,7 @@
 //! not yet implemented says so rather than pretending to succeed.
 
 mod config_cmd;
+mod daemon_cmd;
 mod run_cmd;
 mod status_cmd;
 mod version_cmd;
@@ -88,6 +89,16 @@ pub enum Command {
         #[command(subcommand)]
         command: DependencyCommand,
     },
+    /// Run the controller daemon.
+    Controller,
+    /// Run the agent daemon.
+    Agent,
+    /// Report what this host looks like to Sentinel, and why.
+    Doctor {
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `sentinel entity ...`.
@@ -149,6 +160,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Discover { json } => run_cmd::discover(&cli, *json).await,
         Command::Entity { command } => run_cmd::entity(&cli, command).await,
         Command::Dependency { command } => run_cmd::dependency(&cli, command).await,
+        Command::Controller => daemon_cmd::controller(&cli).await,
+        Command::Agent => daemon_cmd::agent(&cli).await,
+        Command::Doctor { json } => daemon_cmd::doctor(&cli, *json).await,
     }
 }
 
@@ -251,6 +265,33 @@ mod tests {
             vec!["sentinel", "config", "check", "--json"],
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+    }
+
+    #[test]
+    fn the_daemon_verbs_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["sentinel", "controller"]).expect("parse").command,
+            Command::Controller
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["sentinel", "agent"]).expect("parse").command,
+            Command::Agent
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["sentinel", "doctor"]).expect("parse").command,
+            Command::Doctor { json: false }
+        ));
+    }
+
+    #[test]
+    fn there_is_no_subcommand_that_runs_something_on_a_host() {
+        // SPEC.md §116, at the CLI surface as well as the wire surface.
+        for forbidden in ["exec", "run", "shell", "restart", "reboot", "drain", "resume"] {
+            assert!(
+                Cli::try_parse_from(["sentinel", forbidden]).is_err(),
+                "`sentinel {forbidden}` must not exist"
+            );
         }
     }
 
