@@ -14,6 +14,36 @@
 * controller 側で `sentinel install controller` が済んでおり、
   `/etc/sentinel/token` が存在する
 
+## どのユーザーで SSH するか
+
+**ユーザー名は秘密情報ではないので、`ansible-vault` は要りません。**
+決まる順序は次のとおりです。
+
+| 優先 | 指定方法 |
+| --- | --- |
+| 1 | inventory の `ansible_user = li` |
+| 2 | `ansible-playbook -u li` |
+| 3 | `ansible.cfg` の `remote_user` |
+| 4 | **`~/.ssh/config` の `User`** |
+| 5 | 実行している人のローカルユーザー名 |
+
+Ansible は既定で `ssh` コマンドを使うため、**`~/.ssh/config` をそのまま尊重します。**
+普段 `ssh node01` で入れているなら、Ansible も同じ設定で入ります。
+inventory に何も書かなくて済むので、これが一番きれいです。
+
+```
+# ~/.ssh/config
+Host node* filesrv*
+    User li
+    Port 22
+```
+
+疎通確認:
+
+```bash
+ansible -i inventory.ini agents -m ping -K
+```
+
 ## パスワードが必要な場合
 
 SSH にも `sudo` にもパスワードが要る、という環境は珍しくありません。両方扱えます。
@@ -58,6 +88,18 @@ ansible-playbook -i inventory.ini site.yml -K
 ```
 
 全 `sudo` を NOPASSWD にする必要はありません。
+
+### ansible-vault が必要なのはどこか
+
+| 状況 | 必要なもの |
+| --- | --- |
+| SSH 鍵、`sudo` パスワード共通 | `-K` だけ |
+| SSH もパスワード、両方共通 | `--ask-pass -K`（+ `sshpass`） |
+| **ノードごとにパスワードが違う** | **ansible-vault** |
+| ユーザー名がノードごとに違う | `~/.ssh/config` か `ansible_user`（vault 不要） |
+
+クラスタは通常、全ノードで同じアカウント・同じパスワードなので、
+**`--ask-pass -K` で足ります。** vault が要るのはパスワードが分かれている場合だけです。
 
 ### ノードごとにパスワードが違う場合
 
