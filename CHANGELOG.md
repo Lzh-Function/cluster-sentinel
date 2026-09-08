@@ -3,6 +3,23 @@
 本プロジェクトは milestone 単位で構築されています
 （[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) §94）。
 
+## v0.3.1
+
+実機導入で見つかった不具合の修正と、まっさらな host からの導入手順。
+
+* **到達性 probe が capability を要求しなくなった。** Slurm discovery で
+  見つかった host には 1 つも probe が走っておらず、
+  誰も接触していない host が HEALTHY と表示されていた
+* **実クラスタの識別子をドキュメントから削除。**
+  ホスト名・VLAN・IP・実 MAC 由来の link-local アドレス
+* 報告アドレスの選択（loopback interface 上のアドレスを除外、
+  複数 NIC の曖昧さを報告、`[agent] interface` / `address`）
+* systemd unit の `StateDirectory=`、`install --binary`、
+  ダウンロード先から実行した場合の警告
+* `sentinel install` が `scontrol` を検出して Slurm discovery を設定
+* Ansible ロール（`deploy/ansible/`）
+* release workflow（x86_64 / aarch64 の静的リンクバイナリ）
+
 ## 未リリース
 
 M0-M10（core scope）完了。
