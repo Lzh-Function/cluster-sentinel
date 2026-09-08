@@ -20,7 +20,7 @@
 * Ansible ロール（`deploy/ansible/`）
 * release workflow（x86_64 / aarch64 の静的リンクバイナリ）
 
-## 未リリース
+## v0.3.5
 
 * **到達性 probe が SSH ポートを無視して 22 番に固定されていた**（バグ修正）。
   SSH を 22 以外に移し、22 番を firewall で DROP している環境では、
@@ -33,6 +33,13 @@
   journal が読めるホストでも `journal.events` が UNSUPPORTED になり、
   kernel event が一切収集されていなかった。
   `install` の案内と Ansible ロールの両方で group に追加する。
+* **read-only な NFS mount を「劣化」と判定しなくなった**（誤検知の修正）。
+  `/proc/mounts` の `ro` は「読み取り専用である」ことしか示さず、
+  「読み取り専用に落ちた」かどうかは分からない。意図的に ro で
+  export / mount している共有は珍しくなく、それを常時 DEGRADED と
+  報告するのは恒久的な誤警報で、storage component 全体が信用されなくなる。
+  事実として記録するだけにした。**本当に kernel が ro に落とした場合は
+  journal probe（`filesystem_readonly`）が捉える。**
 * `docs/DEPLOYMENT.md` に firewall で開けるポートの節を追加。
 
 ## v0.3.4
