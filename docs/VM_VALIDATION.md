@@ -129,3 +129,41 @@ Docker / VM で代替できるものはそちらで行ってください。
 | 2 | in-process simulation | 自動化済み・CI 実行可能 |
 | 3 | Docker 疑似クラスタ | 自動化済み（`dev/compose/scripts/acceptance`、23 項目）。cgroup は v2 実階層だが scope 作成は systemd 経由ではない |
 | 4 | VM / 実機 | **未実施**。本書が要件一覧 |
+
+## TLS
+
+疑似クラスタは平文 HTTP のまま動作します（TLS は追加的な設定であり、
+既定の経路を変えないことを確認するため）。
+
+protocol 部分は `tests/tls.rs` が実際の TLS listener と実際の client、
+その場で生成した証明書で検証しています（mutual TLS の受理・拒否を含む）。
+
+daemon の設定読み込み経路は、本 repository の開発環境で
+`sentinel controller` を mutual TLS 設定で起動し、
+`curl` で外部から確認済みです（平文接続・CA 無し・client 証明書無しの
+3 通りがすべて拒否され、client 証明書ありのみ成功）。
+
+実機で確認すべきこと:
+
+| 項目 | 手順 | 期待される結果 |
+| --- | --- | --- |
+| 起動 | controller の log | `controller listening ... tls=true` |
+| 証明書チェーン | `openssl s_client -connect <host>:7443 -CAfile <ca>` | `Verify return code: 0` |
+| agent の接続 | agent の log | 登録が成功し、`insecure_skip_verify` の警告が出ないこと |
+| 証明書の期限切れ | 期限切れ証明書で起動 | agent が接続を拒否し、log に理由が出ること |
+| 材料の欠損 | `key` を読めない状態にする | controller が**起動に失敗する**（平文で起動しないこと） |
+
+## Retention
+
+`sentinel prune` は疑似クラスタの実データに対して確認済みです
+（10,350 observation を削除、`--vacuum` で 10.8 MiB → 2.3 MiB、
+削除後も診断は正常）。
+
+実機で確認すべきこと:
+
+| 項目 | 手順 | 期待される結果 |
+| --- | --- | --- |
+| 数か月分に対する初回 prune | 実際に実行し、所要時間を測る | 完了すること。その間 agent が spool で耐えること |
+| 定期実行 | controller を 1 時間以上動かす | log に prune の記録が出ること |
+| 容量の頭打ち | 数週間の運用後に database サイズを確認 | 保持期間に対応する値で安定すること |
+| 長期停止からの復帰 | controller を数日停止して起動 | 起動時の prune が滞留分を処理すること |

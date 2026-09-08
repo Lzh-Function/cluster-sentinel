@@ -179,7 +179,79 @@ pub fn validate(config: &Config) -> ValidationReport {
         }
     }
 
+    validate_retention(config, &mut report);
+    validate_tls(config, &mut report);
+
     report
+}
+
+/// Report TLS settings that cannot work, or that work but protect nothing.
+fn validate_tls(config: &Config, report: &mut ValidationReport) {
+    for problem in config.tls.problems() {
+        report.issues.push(ValidationIssue::error("tls", problem));
+    }
+
+    if config.tls.insecure_skip_verify {
+        report.issues.push(ValidationIssue::warning(
+            "tls.insecure_skip_verify",
+            "the controller certificate is not checked: anyone who can redirect \
+             the connection can read the cluster credential",
+        ));
+    }
+}
+
+/// Warn about retention settings that let the database grow unchecked.
+///
+/// These are warnings, not errors: a site with a large disk or a compliance
+/// requirement is entitled to keep everything. It just should not be able to
+/// arrive there without being told.
+fn validate_retention(config: &Config, report: &mut ValidationReport) {
+    let retention = &config.retention;
+
+    if !retention.enabled {
+        report.issues.push(ValidationIssue::warning(
+            "retention.enabled",
+            "pruning is off: the database will grow until the disk is full unless \
+             something else removes rows from it",
+        ));
+        return;
+    }
+
+    let periods = [
+        ("retention.observations", retention.observations),
+        ("retention.transitions", retention.transitions),
+        ("retention.resolved_incidents", retention.resolved_incidents),
+        ("retention.diagnoses", retention.diagnoses),
+    ];
+    // Observations are the bulk of the bytes by a wide margin, so keeping them
+    // forever is the one worth saying out loud.
+    for (location, period) in periods {
+        if period.is_forever() && location == "retention.observations" {
+            report.issues.push(ValidationIssue::warning(
+                location,
+                "observations are kept forever: they are the bulk of the database, \
+                 measured at roughly 170 MB per host per day",
+            ));
+        }
+    }
+
+    if retention.keep_per_entity < crate::persistence::MIN_KEEP_PER_ENTITY {
+        report.issues.push(ValidationIssue::warning(
+            "retention.keep_per_entity",
+            format!(
+                "raised to {} at prune time: diagnosis reads that many recent \
+                 observations per entity, and a lower floor would let pruning blind it",
+                crate::persistence::MIN_KEEP_PER_ENTITY
+            ),
+        ));
+    }
+
+    if retention.interval < std::time::Duration::from_secs(60) {
+        report.issues.push(ValidationIssue::warning(
+            "retention.interval",
+            "pruning more than once a minute spends write locks to delete almost nothing",
+        ));
+    }
 }
 
 fn validate_endpoint(value: &str, location: &str, report: &mut ValidationReport) {

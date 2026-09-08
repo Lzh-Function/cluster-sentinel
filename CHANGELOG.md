@@ -14,6 +14,47 @@ Docker 疑似クラスタに対して 23 項目すべてが通ります。
 
 ### 横断的な事項
 
+* **記録の保持期間**（新規機能、`[retention]`）。
+  database は書き込み一方で、削除する経路がコードのどこにも無かった。
+  実測で 5 host あたり約 10 KB/s、host 1 台あたり 1 日約 170 MB。
+  100 ノードなら 1 日 17 GB で、放置すればディスクを埋めて controller ごと死ぬ。
+  * class ごとに期間を設定する（observation 14d / transition 90d /
+    解決済み incident 180d / 孤立 diagnosis 30d が既定）。
+    バイト単価あたりの価値が違うため、単一の期間では表現できない。
+  * `"never"` で個別に無期限保持を選べる。
+  * **open な incident は年齢に関わらず削除しない。**
+    1 年開いている incident は 1 年直っていない障害である。
+  * **証拠は引用元より長生きする。** 生存している incident / diagnosis が
+    参照する observation は保持期間を過ぎても残る。
+    証拠が消えた診断は誰も検証できない主張になる（`SPEC.md` §116）。
+  * **各 entity は直近 `keep_per_entity` 件を必ず残す。**
+    これが無いと、保持期間より長く落ちている host が
+    「見たことがある」証拠をすべて失う。最長の障害ほど消えるという逆転になる。
+  * controller 内で 1 時間ごと、および起動時に実行。
+  * `sentinel prune [--dry-run] [--vacuum] [--observations <期間>]`。
+    `--dry-run` の件数は実際の DELETE を実行して rollback したもので、
+    別の COUNT クエリではない（本番と食い違わないため）。
+* **TLS**（新規機能、`[tls]`）。
+  credential は bearer token であり、wire を読める者は全 agent に
+  なりすませる。従来の答えは「reverse proxy を置け」で、
+  これはシステムの性質ではなく運用者への宿題だった。
+  * `cert` + `key` で controller が TLS listen する。
+  * `client_ca` を書くと client 証明書が **必須** になる（任意にはならない。
+    任意の client 認証は攻撃者が提示しないだけで無効化される）。
+    **token が漏れても耐えられる構成はこれだけ。**
+  * agent 側は `ca` / `client_cert` / `client_key` / `server_name` /
+    `insecure_skip_verify`。`ca` は system root を置換せず追加する。
+  * client 側の設定が 1 つでもあれば `host:port` は `https://` と解釈する。
+  * TLS 材料が読めない場合、controller は **起動に失敗する**。
+    平文で起動して暗号化されていると誤解されるのが最悪の失敗形。
+  * 証明書の自動生成はしない。監視システムが trust anchor を発行すれば、
+    誰も監査しない private CA が 1 つ増えるだけ。
+  * agent の health endpoint は平文のまま。credential を運ばず、
+    liveness 以外を明かさない。
+* **診断結果の retraction 修正。** `diagnose_and_classify` が
+  classification を追加しかしておらず、解決済みの障害の label が
+  database に残り続けていた。古い label と生きた label は区別できないため、
+  1 つでも古いものが混じれば board の label は全部意味を失う。
 * **非標準ポートの設定**（新規機能）。
   `metadata.ports` は読まれていたが、どの provider も書いていなかったため、
   SSH が 22 以外のクラスタは設定不可能だった。

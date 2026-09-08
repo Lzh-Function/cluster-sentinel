@@ -123,6 +123,23 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Delete records that have outlived their retention period.
+    Prune {
+        /// Report what would be deleted without deleting it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Return freed space to the filesystem afterwards.
+        ///
+        /// Rewrites the whole database, so it is opt-in.
+        #[arg(long)]
+        vacuum: bool,
+        /// Override the configured observation retention for this run.
+        #[arg(long, value_name = "PERIOD")]
+        observations: Option<String>,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Report what this host looks like to Sentinel, and why.
     Doctor {
         /// Emit JSON instead of text.
@@ -222,6 +239,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             output_dir,
             dry_run,
         } => install_cmd::run(role, output_dir, &cli.config, *dry_run),
+        Command::Prune {
+            dry_run,
+            vacuum,
+            observations,
+            json,
+        } => run_cmd::prune(&cli, *dry_run, *vacuum, observations.as_deref(), *json).await,
         Command::Doctor { json } => daemon_cmd::doctor(&cli, *json).await,
     }
 }

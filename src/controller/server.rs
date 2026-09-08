@@ -9,16 +9,26 @@
 //! | HTTP API | continuous | agents push observations here |
 //! | Inventory discovery | minutes | shells out to `scontrol`, probes every host |
 //! | Diagnosis and notification | seconds | reads only what is already stored |
+//! | Retention pruning | hours | one delete per data class |
 //!
-//! The last two are separate on purpose. Sharing discovery's cadence would
-//! mean a fault waits for the next inventory sweep before anyone is told, and
-//! inventory sweeps are expensive enough to want to be rare.
+//! The API listens with TLS when `[tls]` names a certificate and key, and in
+//! plaintext otherwise. Both are bound the same way, so port 0 and host names
+//! behave identically either way.
+//!
+//! Discovery and diagnosis are separate on purpose. Sharing discovery's
+//! cadence would mean a fault waits for the next inventory sweep before anyone
+//! is told, and inventory sweeps are expensive enough to want to be rare.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+
+use crate::config::RetentionConfig;
+
+/// How long in-flight requests get to finish when the controller is stopping.
+const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 use crate::notification::{Deduplicator, MaintenanceWindows, NotificationProvider};
 use crate::protocol::ClusterCredential;
@@ -32,17 +42,20 @@ pub struct ServerHandle {
     /// The address actually bound, which may differ from the requested one when
     /// port 0 was asked for.
     pub local_addr: SocketAddr,
+    /// Whether the listener is serving TLS.
+    pub tls: bool,
     shutdown: tokio::sync::oneshot::Sender<()>,
     server: tokio::task::JoinHandle<std::io::Result<()>>,
     discovery: Option<tokio::task::JoinHandle<()>>,
     diagnosis: Option<tokio::task::JoinHandle<()>>,
+    retention: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ServerHandle {
     /// Ask the server to stop and wait for it (SPEC.md §84).
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
-        for task in [self.discovery, self.diagnosis].into_iter().flatten() {
+        for task in [self.discovery, self.diagnosis, self.retention].into_iter().flatten() {
             task.abort();
             let _ = task.await;
         }
@@ -62,12 +75,17 @@ pub struct ServeOptions {
     pub discovery_interval: Option<std::time::Duration>,
     /// How often to diagnose, correlate and notify; `None` disables the loop.
     pub diagnosis_interval: Option<std::time::Duration>,
+    /// How long to keep recorded data; `None` disables pruning entirely.
+    pub retention: Option<RetentionConfig>,
+    /// Transport security. Plain HTTP when this is `None`.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 /// Start the controller's API, and its discovery loop if one is configured.
 pub async fn serve(controller: Controller, options: ServeOptions) -> anyhow::Result<ServerHandle> {
     let discovery_interval = options.discovery_interval;
     let diagnosis_interval = options.diagnosis_interval;
+    let retention = options.retention.filter(|r| r.enabled);
 
     let providers: Vec<Arc<dyn NotificationProvider>> = super::providers_from_config(controller.config());
     if !providers.is_empty() {
@@ -83,18 +101,46 @@ pub async fn serve(controller: Controller, options: ServeOptions) -> anyhow::Res
         heartbeat_interval: options.heartbeat_interval,
     };
 
+    // Bound the same way in both cases, so that port 0 and host names behave
+    // identically with and without TLS.
     let listener = TcpListener::bind(&options.listen).await?;
     let local_addr = listener.local_addr()?;
-    tracing::info!(%local_addr, "controller listening");
+    let serving_tls = options.tls.is_some();
+    tracing::info!(%local_addr, tls = serving_tls, "controller listening");
+    if !serving_tls {
+        tracing::warn!(
+            "the controller is serving plain HTTP: the cluster credential crosses \
+             the network in the clear. Set [tls] cert and key, or confine this to a \
+             trusted management network."
+        );
+    }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router(state))
-            .with_graceful_shutdown(async {
+    let router = router(state);
+    let server = match options.tls {
+        Some(tls) => {
+            let std_listener = listener.into_std()?;
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+            tokio::spawn(async move {
                 let _ = shutdown_rx.await;
-            })
-            .await
-    });
+                // Let in-flight requests finish; an agent mid-upload should not
+                // have to re-send a batch because the controller was restarted.
+                shutdown_handle.graceful_shutdown(Some(GRACE_PERIOD));
+            });
+            let acceptor = axum_server::tls_rustls::RustlsConfig::from_config(tls);
+            let server = axum_server::from_tcp_rustls(std_listener, acceptor)
+                .map_err(|e| anyhow::anyhow!("cannot serve TLS on {local_addr}: {e}"))?;
+            tokio::spawn(async move { server.handle(handle).serve(router.into_make_service()).await })
+        }
+        None => tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        }),
+    };
 
     let discovery = discovery_interval.map(|interval| {
         let controller = Arc::clone(&controller);
@@ -109,13 +155,61 @@ pub async fn serve(controller: Controller, options: ServeOptions) -> anyhow::Res
         tokio::spawn(async move { diagnosis_loop(controller, interval, providers).await })
     });
 
+    // Pruning is last to start and first to be skippable: it is the only loop
+    // whose job is to delete, so it never runs unless it was asked for.
+    let retention = retention.map(|config| {
+        let controller = Arc::clone(&controller);
+        tokio::spawn(async move { retention_loop(controller, config).await })
+    });
+
     Ok(ServerHandle {
         local_addr,
+        tls: serving_tls,
         shutdown: shutdown_tx,
         server,
         discovery,
         diagnosis,
+        retention,
     })
+}
+
+/// Delete records that have outlived their retention period.
+///
+/// A pass runs at startup as well as on the interval, because a controller
+/// that was down for a week comes back with a week of arrears, and waiting an
+/// hour to start on it wastes the one hour when the disk is emptiest.
+async fn retention_loop(controller: Arc<Mutex<Controller>>, config: RetentionConfig) {
+    let mut ticker = tokio::time::interval(config.interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        ticker.tick().await;
+
+        let started = std::time::Instant::now();
+        let store = {
+            let controller = controller.lock().await;
+            controller.store().clone()
+        };
+
+        // Deliberately outside the controller lock: a long first pass must not
+        // stop observations being ingested. SQLite serialises the writes.
+        match store.prune(&config).await {
+            Ok(outcome) if outcome.is_empty() => {
+                tracing::debug!(elapsed_ms = started.elapsed().as_millis() as u64, "nothing to prune");
+            }
+            Ok(outcome) => tracing::info!(
+                observations = outcome.observations,
+                transitions = outcome.transitions,
+                incidents = outcome.incidents,
+                diagnoses = outcome.diagnoses,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "pruned records past their retention period"
+            ),
+            // Never fatal: a failed prune costs disk, a stopped controller
+            // costs the monitoring.
+            Err(error) => tracing::error!(%error, "retention pass failed"),
+        }
+    }
 }
 
 /// Diagnose, correlate and notify on a schedule.
@@ -252,6 +346,8 @@ mod tests {
                 heartbeat_interval: std::time::Duration::from_secs(5),
                 discovery_interval,
                 diagnosis_interval: None,
+                retention: None,
+                tls: None,
             },
         )
         .await

@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::controller::Controller;
-use crate::persistence::SqliteStore;
+use crate::persistence::{PruneMode, PruneOutcome, SqliteStore};
 
 use super::{status_cmd, Cli, DependencyCommand, EntityCommand, IncidentCommand};
 use crate::diagnosis::Diagnosis;
@@ -330,6 +330,123 @@ pub async fn diagnose(cli: &Cli, json: bool) -> anyhow::Result<i32> {
     }
 
     Ok(if diagnoses.is_empty() { 0 } else { 2 })
+}
+
+/// `sentinel prune`.
+///
+/// The same pass the controller runs on its own, exposed so an operator can
+/// choose when the first one happens on a database that has been growing for
+/// months, and so lowering a retention period can be tried before it is meant.
+pub async fn prune(
+    cli: &Cli,
+    dry_run: bool,
+    vacuum: bool,
+    observations: Option<&str>,
+    json: bool,
+) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let mut retention = config.retention.clone();
+
+    // An override applies to this run only. Pruning is irreversible, so it is
+    // reached through an explicit flag rather than by editing the config file
+    // and restarting, which would also change what the daemon does forever.
+    if let Some(period) = observations {
+        retention.observations = parse_retention_period(period)?;
+    }
+    // `prune` was asked for, so it happens: a config that has switched
+    // retention off should not silently turn this into a no-op.
+    retention.enabled = true;
+
+    let store = open_store(&config).await?;
+    let before = store.database_bytes().await?;
+    let mode = if dry_run { PruneMode::DryRun } else { PruneMode::Delete };
+    let outcome = store.prune_at(&retention, crate::time::now(), mode).await?;
+
+    if vacuum && !dry_run {
+        store.vacuum().await?;
+    }
+    let after = store.database_bytes().await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "dry_run": dry_run,
+                "vacuumed": vacuum && !dry_run,
+                "deleted": {
+                    "observations": outcome.observations,
+                    "transitions": outcome.transitions,
+                    "incidents": outcome.incidents,
+                    "diagnoses": outcome.diagnoses,
+                },
+                "database_bytes_before": before,
+                "database_bytes_after": after,
+            }))?
+        );
+    } else {
+        print!("{}", render_prune(&outcome, dry_run, vacuum, before, after));
+    }
+
+    Ok(0)
+}
+
+/// Parse a retention period given on the command line.
+fn parse_retention_period(text: &str) -> anyhow::Result<crate::config::RetentionPeriod> {
+    // Deserialize rather than reimplement, so the command line and the config
+    // file accept exactly the same spellings, "never" included.
+    let quoted = format!("period = {}", serde_json::to_string(text)?);
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        period: crate::config::RetentionPeriod,
+    }
+    let parsed: Wrapper =
+        toml::from_str(&quoted).map_err(|e| anyhow::anyhow!("--observations {text:?}: {}", e.message()))?;
+    Ok(parsed.period)
+}
+
+/// Render a pruning outcome for a human.
+fn render_prune(outcome: &PruneOutcome, dry_run: bool, vacuum: bool, before: u64, after: u64) -> String {
+    let mut out = String::new();
+    if dry_run {
+        out.push_str("Dry run: nothing was deleted.\n\n");
+    }
+    let verb = if dry_run { "would delete" } else { "deleted" };
+    out.push_str(&format!("{} {}\n", capitalise(verb), outcome));
+
+    out.push_str(&format!("\nDatabase: {}\n", human_bytes(before)));
+    if !dry_run {
+        if vacuum {
+            out.push_str(&format!("After vacuum: {}\n", human_bytes(after)));
+        } else if outcome.total() > 0 {
+            // Saying "still 900 MB" without saying why invites a bug report.
+            out.push_str("Freed pages are reused by new records. Pass --vacuum to return them\nto the filesystem.\n");
+        }
+    }
+    out
+}
+
+fn capitalise(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Bytes in the units an operator thinks in.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// Render diagnoses for a human, resolving entity ids to names.

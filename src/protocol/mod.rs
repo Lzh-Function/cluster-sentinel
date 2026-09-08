@@ -14,6 +14,7 @@
 //!   RPC surface is deliberately incapable of remote execution (SPEC.md §116).
 
 mod auth;
+pub mod tls;
 
 pub use auth::{AuthError, ClusterCredential};
 

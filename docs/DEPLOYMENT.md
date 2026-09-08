@@ -410,18 +410,155 @@ disable  >  force  >  runtime discovery  >  enable / role hint
 
 ### 9.6 TLS
 
-v1 の agent は controller address をそのまま URL として解釈します。
-`host:port` は `http://` として扱われます。
+TLS は組み込みです。reverse proxy は不要です。
 
-production では TLS を終端してください。
+平文のままでも動作しますが、cluster credential は bearer token なので、
+wire を読める者は全 agent になりすませます。
+隔離された管理 network 以外では TLS を設定してください。
+
+#### 9.6.1 証明書の準備
+
+既存の PKI で発行してください。Sentinel は証明書を生成しません
+（監視システムが trust anchor を発行すると、誰も監査しない private CA が増えるだけです）。
+
+controller の証明書には、**agent が接続に使う名前またはアドレス**を
+SAN に入れてください。
+
+```bash
+# 例: 手元の CA で発行する場合
+openssl x509 -req -in controller.csr -CA ca.crt -CAkey ca.key \
+  -extfile <(printf "subjectAltName=DNS:controller.example,IP:10.0.0.10") \
+  -days 825 -out controller.crt
+```
+
+配置とパーミッション:
+
+```bash
+install -d -m 0755 /etc/sentinel/tls
+install -m 0644 ca.crt         /etc/sentinel/tls/ca.crt
+install -m 0644 controller.crt /etc/sentinel/tls/controller.crt
+install -m 0600 -o sentinel -g sentinel controller.key /etc/sentinel/tls/controller.key
+```
+
+#### 9.6.2 TLS のみ（server 認証）
+
+```toml
+# controller
+[tls]
+cert = "/etc/sentinel/tls/controller.crt"
+key  = "/etc/sentinel/tls/controller.key"
+```
+
+```toml
+# agent
+[agent]
+controller_address = "controller.example:7443"
+
+[tls]
+ca = "/etc/sentinel/tls/ca.crt"
+```
+
+`[tls]` に client 側の設定が 1 つでもあると、
+`host:port` は `https://` として解釈されます。
+`controller_address` に scheme を書いた場合はそちらが優先されます。
+
+#### 9.6.3 mutual TLS（推奨）
+
+**token が漏れても耐えられる構成はこれだけです。**
+証明書を持たない client は token を出すことすらできません。
+
+```toml
+# controller
+[tls]
+cert      = "/etc/sentinel/tls/controller.crt"
+key       = "/etc/sentinel/tls/controller.key"
+client_ca = "/etc/sentinel/tls/ca.crt"     # これを書くと client 証明書は必須
+```
+
+```toml
+# agent
+[tls]
+ca          = "/etc/sentinel/tls/ca.crt"
+client_cert = "/etc/sentinel/tls/agent.crt"
+client_key  = "/etc/sentinel/tls/agent.key"
+```
+
+agent 用の証明書は host ごとに発行してください
+（1 枚を全 host で共有すると、1 台の侵害が全体の侵害になります）。
+
+#### 9.6.4 IP アドレスで接続する場合
+
+controller の証明書が名前しか持たず、agent が IP で接続する場合:
 
 ```toml
 [agent]
-controller_address = "https://parent:7443"
+controller_address = "10.0.0.10:7443"
+
+[tls]
+ca          = "/etc/sentinel/tls/ca.crt"
+server_name = "controller.example"   # 証明書上の名前
 ```
 
-TLS 無しの場合、cluster network 上の受動的観測者に credential が露出します。
-詳細は [SECURITY.md](SECURITY.md) を参照してください。
+`server_name` は「アドレスで接続するが、証明書上の名前で検証する」ための
+設定です。`controller_address` が既に名前の場合は使えません（エラーになります）。
+
+#### 9.6.5 PKI がまだ無い場合
+
+```toml
+[tls]
+insecure_skip_verify = true
+```
+
+**これは TLS を装飾に変えます。** 接続を横取りできる攻撃者は
+任意の証明書を提示でき、credential はそのまま読まれます。
+起動のたびに警告が出ます。暫定措置としてのみ使ってください。
+
+#### 9.6.6 確認
+
+```bash
+# 設定の妥当性（cert だけあって key が無い等はここで落ちる）
+sentinel config check
+
+# controller が TLS で listen しているか
+journalctl -u sentinel-controller | grep "controller listening"
+#   -> tls=true
+
+# 証明書チェーンの確認
+openssl s_client -connect controller.example:7443 \
+  -CAfile /etc/sentinel/tls/ca.crt </dev/null
+```
+
+TLS 材料が読めない場合、controller は**起動に失敗します**。
+平文で起動して「暗号化されている」と誤解されるのが最悪の失敗形だからです。
+
+詳細は [SECURITY.md](SECURITY.md) と
+[CONFIGURATION.md](CONFIGURATION.md) の `[tls]` を参照してください。
+
+### 9.7 database の保持期間
+
+controller の database は書き込み一方で、既定では
+observation 14 日 / transition 90 日 / 解決済み incident 180 日で prune されます。
+実測で host 1 台あたり 1 日約 170 MB 増えるため、
+既定なら host あたり約 2.4 GB で頭打ちになります。
+
+長期保存が必要な場合:
+
+```toml
+[retention]
+observations       = "60d"
+resolved_incidents = "never"     # incident は消さない
+```
+
+ディスクが小さい場合:
+
+```toml
+[retention]
+observations = "3d"
+interval     = "15m"
+```
+
+`sentinel prune --dry-run` で、実行前に削除量を確認できます。
+運用手順は [OPERATIONS.md](OPERATIONS.md) を参照してください。
 
 ---
 

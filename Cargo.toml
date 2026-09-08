@@ -37,8 +37,13 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 async-trait = "0.1"
 humantime-serde = "1"
 humantime = "2"
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
 
 [dev-dependencies]
+rcgen = "0.14.7"
 tempfile = "3"
 
 [profile.release]

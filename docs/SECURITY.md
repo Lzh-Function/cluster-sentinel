@@ -80,20 +80,56 @@ prefix がタイミングから漏れないようにしています。
 
 cluster 単位の共有 credential は *下限* であり、目標ではありません。
 これを掌握した攻撃者は、任意の host になりすまして偽 observation を注入できます。
-`IMPLEMENTATION.md` §65 の要求どおり、
-per-node credential および mTLS へ、呼び出し側を変えずに置換できる形にしてあります。
+
+**mutual TLS を設定すれば、token 単独では不十分になります**（下記）。
+per-node credential そのものは未実装で、
+`IMPLEMENTATION.md` §65 の要求どおり呼び出し側を変えずに置換できる形にしてあります。
 
 ## 転送路の保護
 
-v1 の agent は controller address をそのまま URL として解釈します。
-`host:port` は `http://` として扱われます。
+TLS は組み込みです。`[tls]` に `cert` と `key` を設定すると、
+controller は TLS で listen します。設定 reference は
+[`CONFIGURATION.md`](CONFIGURATION.md) の `[tls]` を参照してください。
 
-**production では TLS を終端してください。** 選択肢:
+3 つの構成があり、いずれも追加的です。
 
-* `https://` URL を controller address に設定し、TLS を終端する reverse proxy を置く
-* 監視トラフィックを信頼された管理 network に限定する
+| 構成 | 設定 | 守れるもの |
+| --- | --- | --- |
+| 平文 | なし | なし（隔離された管理 network 前提） |
+| TLS | `cert` + `key` | 受動的な盗聴。credential が wire に出なくなる |
+| mutual TLS | + `client_ca` | 上記に加え、**token の漏洩**。証明書がなければ token を出すことすらできない |
 
-TLS 無しの場合、cluster network 上の受動的観測者に credential が露出します。
+`client_ca` を設定した時点で client 証明書は**必須**になります。
+任意の client 認証はセキュリティのように読めて何も守りません
+（攻撃者は提示しないだけです）。
+
+TLS 材料が読めない場合、controller は**起動に失敗します**。
+平文で起動して「暗号化されている」と誤解されるのが最悪の失敗形だからです。
+
+平文で listen している間は、起動のたびに警告を出します。
+
+### `insecure_skip_verify`
+
+証明書を検証せずに接続します。これは TLS を装飾に変えます。
+接続を横取りできる攻撃者は任意の証明書を提示でき、credential はそのまま読まれます。
+
+PKI より先に cluster が立ち上がる現実のために用意してあります。
+文書化された switch のほうが、平文 HTTP に戻して忘れられるより安全だからです。
+有効な間は該当 node の log に毎回警告が出ます。
+
+### 証明書の自動生成はしません
+
+監視システムが自前の trust anchor を発行すれば、
+誰も監査しない private CA が 1 つ増えるだけです。
+TLS を要求する現場には、既に証明書を発行する手段があります。
+
+### agent の health endpoint は平文のまま
+
+agent の RPC endpoint（`GET /health`）には TLS を適用していません。
+credential を運ばず、liveness 以外を明かさず、
+route は 1 本の GET しかないためです（`agent/rpc.rs`）。
+盗聴者が得るものは「その agent は生きている」だけであり、
+これは到達性を確認する誰にでも分かることです。
 
 ## 外部コマンドの実行
 

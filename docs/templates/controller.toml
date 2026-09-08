@@ -152,3 +152,40 @@ type = "uses_storage"
 # [capabilities]
 # "storage.nfs.server" = "force"
 # "storage.smart"      = "disable"
+
+
+# ===========================================================================
+# 記録の保持期間
+#
+# database は書き込み一方です。何も消さなければ埋まります。
+# 実測で host 1 台あたり 1 日約 170 MB。
+#
+# 既定値のままで prune は有効です。このセクションを書くのは、
+# 既定と違う期間にしたい場合だけです。
+# ===========================================================================
+# [retention]
+# enabled            = true
+# interval           = "1h"
+# observations       = "14d"    # 容量の大半。"never" も指定可
+# keep_per_entity    = 64       # 期間に関わらず entity ごとに残す件数
+# transitions        = "90d"
+# resolved_incidents = "180d"   # open な incident は年齢に関わらず消えません
+# diagnoses          = "30d"
+
+
+# ===========================================================================
+# TLS（controller 側）
+#
+# credential は bearer token です。平文で運用すると、
+# wire を読める者が全 agent になりすませます。
+#
+# 証明書は既存の PKI で発行してください。Sentinel は生成しません。
+# 手順は docs/DEPLOYMENT.md §9.6 を参照。
+# ===========================================================================
+# [tls]
+# cert = "/etc/sentinel/tls/controller.crt"
+# key  = "/etc/sentinel/tls/controller.key"
+#
+# 以下を書くと client 証明書が「必須」になります（任意にはなりません）。
+# token が漏れても耐えられる構成はこれだけです。
+# client_ca = "/etc/sentinel/tls/ca.crt"

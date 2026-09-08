@@ -7,9 +7,11 @@
 mod entities;
 mod incidents;
 mod observations;
+mod retention;
 mod sqlite;
 
 pub use observations::IngestOutcome;
+pub use retention::{PruneMode, PruneOutcome, MIN_KEEP_PER_ENTITY};
 pub use sqlite::SqliteStore;
 
 use std::path::Path;

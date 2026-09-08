@@ -44,6 +44,8 @@ async fn start_controller(store: SqliteStore) -> ServerHandle {
             // so nothing races.
             discovery_interval: None,
             diagnosis_interval: None,
+            retention: None,
+            tls: None,
         },
     )
     .await
@@ -190,6 +192,8 @@ async fn a_controller_outage_costs_no_observations() {
             heartbeat_interval: Duration::from_secs(5),
             discovery_interval: None,
             diagnosis_interval: None,
+            retention: None,
+            tls: None,
         },
     )
     .await
@@ -344,6 +348,8 @@ async fn an_agent_that_starts_before_the_controller_recovers_by_itself() {
             heartbeat_interval: Duration::from_secs(5),
             discovery_interval: None,
             diagnosis_interval: None,
+            retention: None,
+            tls: None,
         },
     )
     .await

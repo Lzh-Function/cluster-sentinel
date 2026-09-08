@@ -90,6 +90,11 @@ pub async fn controller(cli: &Cli) -> anyhow::Result<i32> {
     let listen = config.controller.listen.clone();
     let discovery_interval = config.controller.inventory_interval;
     let diagnosis_interval = config.controller.diagnosis_interval;
+    let retention = config.retention.clone();
+    // Built before anything else starts: a controller whose TLS material is
+    // wrong should fail to start with the path in the message, not come up in
+    // plaintext and be trusted to be encrypted.
+    let tls_server_config = crate::protocol::tls::server_config(&config.tls)?;
     let controller = Controller::new(config, store.clone()).await?;
 
     let handle = serve(
@@ -100,6 +105,8 @@ pub async fn controller(cli: &Cli) -> anyhow::Result<i32> {
             heartbeat_interval: HEARTBEAT_INTERVAL,
             discovery_interval: Some(discovery_interval),
             diagnosis_interval: Some(diagnosis_interval),
+            retention: Some(retention),
+            tls: tls_server_config,
         },
     )
     .await?;
@@ -129,7 +136,7 @@ pub async fn agent(cli: &Cli) -> anyhow::Result<i32> {
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_STATE_DIR).join("spool.db"));
 
-    let client = ControllerClient::new(&address, &credential, Duration::from_secs(10))?;
+    let client = ControllerClient::with_tls(&address, &credential, Duration::from_secs(10), &config.tls)?;
     let spool = Spool::open(&spool_path, SpoolLimits::default()).await?;
     let inspector = Arc::new(LinuxInspector::new());
     let mut agent = Agent::new(&config, inspector, client, spool)?;

@@ -107,6 +107,91 @@ controller 側への追記は必要ありません。
 | --- | --- | --- |
 | `path` | path | `/var/lib/sentinel/sentinel.db` |
 
+### `[retention]`
+
+記録したデータをどれだけ保持するかです。
+
+| キー | 型 | 既定値 | 意味 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | prune を行うか |
+| `interval` | duration | `1h` | prune の実行間隔（起動時にも 1 回実行） |
+| `observations` | period | `14d` | observation の保持期間 |
+| `keep_per_entity` | 整数 | `64` | 期間に関わらず entity ごとに残す observation 数 |
+| `transitions` | duration | `90d` | state transition の保持期間 |
+| `resolved_incidents` | period | `180d` | **解決済み** incident の保持期間 |
+| `diagnoses` | period | `30d` | どの incident にも属さない diagnosis の保持期間 |
+
+period には duration（`"14d"`、`"6h"`）のほか、
+`"never"`（`"forever"` / `"unlimited"` / `"keep"` も同義）を指定できます。
+
+**なぜ class ごとに分かれているか。** バイト単価あたりの価値が違うからです。
+observation は容量の大半を占め、個々の価値は最も低い
+（昨日の TCP connect 成功 1 件は誰にも何も語りません）。
+incident は段落であり、「これは前にも起きたか」を 1 年後に確認する対象です。
+
+**削除されないもの（SQL で強制、設定で緩められません）:**
+
+* **open な incident は年齢に関わらず削除されません。** 1 年開いている
+  incident は 1 年直っていない障害であり、まさに残すべきものです
+* **証拠は引用元より長生きします。** 生存している incident / diagnosis が
+  参照している observation は、保持期間を過ぎていても残ります。
+  証拠が消えた診断は誰も検証できない主張だからです（`SPEC.md` §116）
+* **各 entity は直近の observation を必ず残します**（`keep_per_entity`）。
+  これが無いと、保持期間より長く落ちている host は「見たことがある」証拠を
+  すべて失います。最長の障害ほど消えるという逆転が起きます
+
+`keep_per_entity` は診断が読む件数（32）を下回れません。
+下回る値を設定した場合は 32 に引き上げられ、`config check` が警告します。
+
+**容量の目安。** 実測で 5 host あたり約 10 KB/s、host 1 台あたり
+1 日約 170 MB です。既定の 14 日保持なら host あたり約 2.4 GB で頭打ちになります。
+
+prune は空きページを再利用可能にしますが、ファイルサイズは縮みません。
+保持期間を下げた直後に領域を返したい場合は `sentinel prune --vacuum` を使います。
+
+### `[tls]`
+
+controller API の転送路保護です。**すべて任意で、追加的です。**
+何も設定しなければ従来どおり平文 HTTP で動作します。
+
+controller 側（listener）:
+
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `cert` | path | server 証明書チェーン（PEM）。設定すると TLS が有効になる |
+| `key` | path | server 秘密鍵（PEM: PKCS#8 / PKCS#1 / SEC1） |
+| `client_ca` | path | client 証明書を検証する CA（PEM）。**設定すると client 証明書は必須になります** |
+
+agent 側（client）:
+
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `ca` | path | controller の証明書を検証する CA（PEM）。system root に**追加**されます |
+| `client_cert` | path | controller に提示する client 証明書（PEM） |
+| `client_key` | path | `client_cert` の秘密鍵（PEM） |
+| `server_name` | 文字列 | 証明書の検証に使う名前。IP で接続する場合に使う |
+| `insecure_skip_verify` | bool | 証明書を検証しない（既定 `false`） |
+
+**3 つの構成:**
+
+1. **何も設定しない** — 平文 HTTP。隔離された管理 network では今も正しい選択です
+2. **`cert` + `key`** — TLS。agent は system root か `ca` で検証します
+3. **`cert` + `key` + `client_ca`** — mutual TLS。agent は証明書を提示しなければ
+   token を出すことすらできません。**token が漏れても耐えられる構成はこれだけです**
+
+`client_ca` を設定した時点で client 証明書は「任意」ではなく「必須」です。
+任意の client 認証はセキュリティのように読めて何も守りません
+（攻撃者は提示しないだけです）。
+
+`insecure_skip_verify = true` は TLS を装飾に変えます。接続を横取りできる
+攻撃者は任意の証明書を提示でき、cluster credential はそのまま読まれます。
+PKI より先に cluster が立ち上がる現実のために用意してありますが、
+起動のたびに警告が出ます。
+
+**証明書の自動生成機能はありません。** 監視システムが自前の trust anchor を
+発行すれば、誰も監査しない private CA が 1 つ増えるだけです。
+TLS を要求する現場には、既に証明書を発行する手段があります。
+
 ### `[peer_monitoring]`
 
 | キー | 型 | 既定値 | 意味 |

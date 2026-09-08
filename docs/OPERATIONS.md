@@ -98,6 +98,7 @@ sentinel incident list       # 対応が必要な incident
 sentinel incident show <id>  # 根拠・timeline・evidence
 sentinel peers               # observer の割り当て
 sentinel doctor              # この host から見た自分自身
+sentinel prune --dry-run     # 保持期間を過ぎた記録の量
 ```
 
 すべて `--json` に対応しているため、スクリプトから利用できます。
@@ -222,6 +223,41 @@ controller 復旧後、spool は自動で再送されます（重複挿入は起
 sentinel doctor   # spool の深さを確認
 ```
 
+## ディスク容量と retention
+
+controller の database は書き込み一方です。何も消さなければ埋まります。
+実測値は host 1 台あたり **1 日約 170 MB**（5 host のテストベッドで約 10 KB/s）。
+100 ノードなら 1 日 17 GB、1 か月 500 GB です。
+
+既定で prune は有効（`[retention]`、observation 14 日）なので、
+host あたり約 2.4 GB で頭打ちになります。設定は
+[`CONFIGURATION.md`](CONFIGURATION.md) の `[retention]` を参照してください。
+
+prune は controller 内で 1 時間ごと、および起動時に実行されます。
+手動でも実行できます。
+
+```bash
+sentinel prune --dry-run                  # 何が消えるかだけ見る
+sentinel prune                            # 実行
+sentinel prune --vacuum                   # 実行し、領域を filesystem に返す
+sentinel prune --observations 3d --vacuum # この 1 回だけ保持期間を短くする
+```
+
+`--dry-run` の件数は実際の DELETE を実行して rollback したものです。
+別の COUNT クエリではないため、本番と食い違うことはありません。
+
+**prune はファイルサイズを縮めません。** 空きページは新しい記録に再利用されるため
+増加は止まりますが、領域を OS に返すには `--vacuum` が必要です
+（database 全体を書き直すため自動では実行しません）。
+
+数か月分が溜まった database に対する最初の 1 回は時間がかかり、
+その間 write lock を保持します。agent は spool で耐えますが、
+`sentinel prune` を使って任意のタイミングで実施することを推奨します。
+
+**削除されないもの:** open な incident（年齢に関わらず）、
+生存している incident / diagnosis が参照している observation、
+各 entity の直近 `keep_per_entity` 件。
+
 ## バックアップ
 
 ```bash
@@ -251,6 +287,8 @@ binary version と protocol version は分離されています。
 * LLM による診断
 * controller の HA
 * Prometheus / Grafana の置き換え
+* per-node credential（cluster 共有 token + mutual TLS までが v1）
+* 遠隔からの読み取り API（参照 CLI は controller 上で実行する必要があります）
 
 いずれも core architecture を変更せずに追加できる設計にしてありますが、
 v1 の範囲外です。

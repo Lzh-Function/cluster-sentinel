@@ -41,3 +41,25 @@ roles = ["compute"]
 # ===========================================================================
 [capabilities]
 "observer.peer" = "force"
+
+
+# ===========================================================================
+# TLS（agent 側）
+#
+# ここに 1 つでも設定があると、controller_address の "host:port" は
+# https:// として解釈されます。
+#
+# 手順は docs/DEPLOYMENT.md §9.6 を参照。
+# ===========================================================================
+# [tls]
+# ca = "/etc/sentinel/tls/ca.crt"
+#
+# mutual TLS の場合。証明書は host ごとに発行してください。
+# client_cert = "/etc/sentinel/tls/agent.crt"
+# client_key  = "/etc/sentinel/tls/agent.key"
+#
+# IP で接続し、証明書は名前しか持たない場合。
+# server_name = "CHANGE-ME-controller-host"
+#
+# PKI がまだ無い場合の暫定措置。TLS を装飾に変えます。
+# insecure_skip_verify = true

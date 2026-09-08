@@ -14,9 +14,13 @@
 //! can show it.
 
 mod precedence;
+mod retention;
+mod tls;
 mod validate;
 
 pub use precedence::{Layered, ValueSource};
+pub use retention::{RetentionConfig, RetentionPeriod};
+pub use tls::TlsConfig;
 pub use validate::{validate, Severity as IssueSeverity, ValidationIssue, ValidationReport};
 
 use std::collections::BTreeMap;
@@ -108,6 +112,12 @@ pub struct Config {
     /// Notification destinations.
     #[serde(default)]
     pub notification: NotificationConfig,
+    /// How long recorded data is kept.
+    #[serde(default)]
+    pub retention: RetentionConfig,
+    /// Transport security for the controller API.
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 fn default_environment() -> String {
@@ -131,6 +141,8 @@ impl Default for Config {
                 webhooks: Vec::new(),
                 min_severity: default_min_severity(),
             },
+            retention: RetentionConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 }

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::config::TlsConfig;
 use crate::protocol::{
     AssignmentsResponse, ClusterCredential, HeartbeatRequest, HeartbeatResponse, ObservationBatch,
     ObservationBatchResponse, RegisterRequest, RegisterResponse, API_PREFIX,
@@ -44,6 +45,22 @@ pub enum ClientError {
     /// The response could not be decoded.
     #[error("cannot decode controller response: {0}")]
     Decode(String),
+    /// The client could not be built from the configuration given.
+    #[error("client configuration: {0}")]
+    Configuration(String),
+}
+
+/// Split `scheme://host:port` into its host and port.
+fn split_host_port(url: &str) -> Result<(String, u16), ClientError> {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let rest = rest.split('/').next().unwrap_or(rest);
+    let (host, port) = rest
+        .rsplit_once(':')
+        .ok_or_else(|| ClientError::Configuration(format!("{url:?} has no port; tls.server_name needs one")))?;
+    let port = port
+        .parse()
+        .map_err(|_| ClientError::Configuration(format!("{port:?} is not a port number")))?;
+    Ok((host.to_string(), port))
 }
 
 impl ClientError {
@@ -55,7 +72,12 @@ impl ClientError {
         match self {
             ClientError::Unreachable { .. } => true,
             ClientError::Rejected { status, .. } => *status >= 500 || *status == 429,
-            ClientError::Unauthorized | ClientError::ProtocolMismatch { .. } | ClientError::Decode(_) => false,
+            ClientError::Unauthorized
+            | ClientError::ProtocolMismatch { .. }
+            | ClientError::Decode(_)
+            // A misconfigured client will be misconfigured on the next attempt
+            // too; retrying only hides the message that would fix it.
+            | ClientError::Configuration(_) => false,
         }
     }
 }
@@ -75,16 +97,50 @@ impl ControllerClient {
     /// as `http://`; TLS is a deployment decision expressed in the URL, and
     /// `docs/SECURITY.md` records what that implies.
     pub fn new(address: &str, credential: &ClusterCredential, timeout: Duration) -> Result<Self, ClientError> {
+        Self::with_tls(address, credential, timeout, &TlsConfig::default())
+    }
+
+    /// Build a client with transport security.
+    ///
+    /// A bare `host:port` is `http://` unless the TLS settings say otherwise,
+    /// in which case it is `https://`: an operator who has configured a CA or
+    /// a client certificate has said what they want, and silently connecting
+    /// in plaintext anyway would be the wrong reading of it.
+    pub fn with_tls(
+        address: &str,
+        credential: &ClusterCredential,
+        timeout: Duration,
+        tls: &TlsConfig,
+    ) -> Result<Self, ClientError> {
+        let scheme = if tls.affects_client() { "https" } else { "http" };
         let base_url = if address.starts_with("http://") || address.starts_with("https://") {
             address.trim_end_matches('/').to_string()
         } else {
-            format!("http://{}", address.trim_end_matches('/'))
+            format!("{scheme}://{}", address.trim_end_matches('/'))
         };
 
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| ClientError::Decode(e.to_string()))?;
+        let mut builder = reqwest::Client::builder().timeout(timeout);
+        builder = crate::protocol::tls::apply_client_config(builder, tls)
+            .map_err(|e| ClientError::Configuration(e.to_string()))?;
+
+        // `server_name` exists for the case where the controller is reached by
+        // address but its certificate names a host. The request is addressed to
+        // the name, and the name is resolved back to the address it came from.
+        let (base_url, builder) = match &tls.server_name {
+            Some(name) => {
+                let (host, port) = split_host_port(&base_url)?;
+                let ip: std::net::IpAddr = host.parse().map_err(|_| {
+                    ClientError::Configuration(format!(
+                        "tls.server_name is for reaching the controller by address,                          but {host:?} is already a name; remove one of the two"
+                    ))
+                })?;
+                let url = base_url.replacen(&host, name, 1);
+                (url, builder.resolve(name, std::net::SocketAddr::new(ip, port)))
+            }
+            None => (base_url, builder),
+        };
+
+        let http = builder.build().map_err(|e| ClientError::Configuration(e.to_string()))?;
 
         Ok(Self {
             base_url,
