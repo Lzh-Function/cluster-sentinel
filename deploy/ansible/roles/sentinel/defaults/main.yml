@@ -92,3 +92,7 @@ sentinel_binary_path: /usr/local/bin/sentinel
 sentinel_config_dir: /etc/sentinel
 sentinel_download_dir: /tmp
 sentinel_user: sentinel
+
+# journal を読むために必要です。無いと journal.events probe が
+# UNSUPPORTED になり、kernel event が収集されません。
+sentinel_user_groups: [systemd-journal]
