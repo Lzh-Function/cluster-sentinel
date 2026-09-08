@@ -419,10 +419,15 @@ ports = {{ ssh = {ssh_port} }}
 }
 
 #[tokio::test]
-async fn without_the_configured_port_the_same_host_would_look_down() {
+async fn without_the_configured_port_the_probe_goes_to_the_default() {
     // The counter-example that shows the previous test is testing something:
-    // probe the same host on the default port and SSH is, correctly, absent.
-    let (_ssh_port, _ssh) = ssh_server().await;
+    // with no port declared, the probe asks the default port, which is not
+    // where this host's SSH actually is.
+    //
+    // What is asserted is *which port the probe chose*, not whether anything
+    // happens to answer on 22 on the machine running the tests. A CI runner
+    // has its own sshd; a test that fails there would be testing the runner.
+    let (ssh_port, _ssh) = ssh_server().await;
 
     let mut entity = ManagedEntity::new("lab", EntityType::Host, "node-a")
         .with_capabilities(CapabilitySet::from_iter(["network.tcp", "ssh.server"]));
@@ -434,5 +439,33 @@ async fn without_the_configured_port_the_same_host_would_look_down() {
         .find(|o| o.probe_id.as_str() == ssh::PROBE_ID)
         .expect("the SSH probe ran");
 
-    assert_ne!(ssh.status, ProbeStatus::Ok, "nothing is listening on 22 here");
+    assert_eq!(ssh.payload["port"], sentinel::probes::ssh::DEFAULT_PORT);
+    assert_ne!(
+        ssh.payload["port"], ssh_port,
+        "the probe must not have found the real port by accident"
+    );
+}
+
+#[tokio::test]
+async fn a_host_whose_ssh_port_answers_nothing_is_not_reported_healthy() {
+    // The consequence the previous test implies, on a port this test owns, so
+    // that it holds on any machine: probe where nothing listens and the SSH
+    // component is not Ok.
+    let closed = dead_port().await;
+
+    let mut entity = ManagedEntity::new("lab", EntityType::Host, "node-a")
+        .with_capabilities(CapabilitySet::from_iter(["network.tcp", "ssh.server"]));
+    entity.metadata = serde_json::json!({
+        "host": { "addresses": ["127.0.0.1"] },
+        "ports": { "ssh": closed },
+    });
+
+    let observations = RemoteObserver::new().observe(&entity).await;
+    let ssh = observations
+        .iter()
+        .find(|o| o.probe_id.as_str() == ssh::PROBE_ID)
+        .expect("the SSH probe ran");
+
+    assert_eq!(ssh.payload["port"], closed);
+    assert_ne!(ssh.status, ProbeStatus::Ok);
 }
