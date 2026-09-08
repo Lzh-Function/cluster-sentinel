@@ -235,7 +235,8 @@ ansible-playbook -i inventory.ini site.yml --limit node02
 
 | 変数 | 既定 | 意味 |
 | --- | --- | --- |
-| `sentinel_version` | `v0.3.0` | 取得する release |
+| `sentinel_version` | このリポジトリの版 | 取得する release |
+| `sentinel_minimum_version` | `0.3.2` | このロールが必要とする最小版 |
 | `sentinel_environment` | *(必須)* | controller と一致させる |
 | `sentinel_controller_address` | *(必須)* | `host:port` |
 | `sentinel_interface` | *(未設定)* | クラスタ内通信の NIC 名 |
@@ -254,6 +255,16 @@ sudo -u sentinel sentinel peers
 
 `sentinel doctor` の報告アドレスに `!` の警告が出ていないか確認してください。
 出ていれば `sentinel_interface` を設定して再実行します。
+
+## バージョンについて
+
+`sentinel_version` の既定値は、**このリポジトリがビルドする版と一致します**
+（`tests/ansible_role.rs` が強制します）。古い release を指定すると、
+ロールが使う `install --binary` や `doctor --json` の address 系フィールドが
+無いため、バイナリを配り終えたあとの `install` で失敗します。
+
+そのため、**バイナリを配置した直後にバージョンを検査**し、
+古ければ「command-line の引数エラー」ではなく理由の分かるメッセージで止まります。
 
 ## アップグレード
 
