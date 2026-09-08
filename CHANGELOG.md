@@ -20,7 +20,7 @@
 * Ansible ロール（`deploy/ansible/`）
 * release workflow（x86_64 / aarch64 の静的リンクバイナリ）
 
-## 未リリース
+## v0.3.2
 
 * **`install --force` が credential を上書きしなくなった**（バグ修正）。
   unit を更新するために `--force` を実行すると、cluster credential が
