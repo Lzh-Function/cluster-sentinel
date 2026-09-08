@@ -14,9 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::capability::CapabilitySet;
+use crate::config::ProbeSchedules;
 use crate::entity::{EntityId, EntityType};
 use crate::observation::Observation;
-use crate::probes::{ExecutionMode, Probe, ProbeContext, ProbeRunner, Skipped};
+use crate::probes::{ExecutionMode, HasDefinition, Probe, ProbeContext, ProbeRunner, Skipped};
 use crate::protocol::AssignedTarget;
 
 /// Runs the remote probes an agent has been assigned.
@@ -28,16 +29,41 @@ pub struct PeerProbes {
     revision: u64,
 }
 
+/// Add a probe unless the operator has switched it off, applying their schedule.
+fn add<P>(probes: &mut Vec<Arc<dyn Probe>>, schedules: &ProbeSchedules, mut probe: P)
+where
+    P: Probe + HasDefinition + 'static,
+{
+    if !schedules.is_enabled(probe.definition().id.as_str()) {
+        return;
+    }
+    schedules.apply(probe.definition_mut());
+    probes.push(Arc::new(probe));
+}
+
 impl PeerProbes {
     /// A peer prober with the built-in remote probes.
     pub fn new(observer: EntityId) -> Self {
+        Self::with_schedules(observer, &ProbeSchedules::default())
+    }
+
+    /// A peer prober with the built-in remote probes, retuned by the operator.
+    ///
+    /// The same overrides apply here as anywhere else: a site that slowed the
+    /// reachability probe down did not mean "except when a peer runs it".
+    pub fn with_schedules(observer: EntityId, schedules: &ProbeSchedules) -> Self {
+        let mut probes: Vec<Arc<dyn Probe>> = Vec::new();
+        add(&mut probes, schedules, crate::probes::network::TcpProbe::reachability());
+        add(&mut probes, schedules, crate::probes::ssh::SshProbe::new());
+        add(
+            &mut probes,
+            schedules,
+            crate::probes::sentinel_rpc::SentinelAgentProbe::new(),
+        );
+
         Self {
             runner: ProbeRunner::new(),
-            probes: vec![
-                Arc::new(crate::probes::network::TcpProbe::reachability()),
-                Arc::new(crate::probes::ssh::SshProbe::new()),
-                Arc::new(crate::probes::sentinel_rpc::SentinelAgentProbe::new()),
-            ],
+            probes,
             observer,
             targets: Vec::new(),
             revision: 0,
@@ -67,6 +93,11 @@ impl PeerProbes {
     }
 
     /// How many targets are assigned.
+    /// The probes this peer runs, so a caller can inspect their schedules.
+    pub fn probes(&self) -> &[Arc<dyn Probe>] {
+        &self.probes
+    }
+
     pub fn len(&self) -> usize {
         self.targets.len()
     }

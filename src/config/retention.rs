@@ -55,7 +55,7 @@ impl fmt::Display for RetentionPeriod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RetentionPeriod::Forever => f.write_str("never"),
-            RetentionPeriod::For(duration) => write!(f, "{}", humantime::format_duration(*duration)),
+            RetentionPeriod::For(duration) => write!(f, "{}", crate::time::format_duration(*duration)),
         }
     }
 }

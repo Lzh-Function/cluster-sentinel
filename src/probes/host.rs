@@ -232,6 +232,9 @@ impl Probe for HostMetricsProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(HostMetricsProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;

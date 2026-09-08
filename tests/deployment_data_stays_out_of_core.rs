@@ -93,6 +93,10 @@ fn the_guard_actually_scans_something() {
 /// reserved documentation name.
 fn is_placeholder_host(host: &str) -> bool {
     host.is_empty()
+        // A format placeholder, or the marker a generated file uses for the
+        // lines an operator must fill in. Neither names a machine.
+        || host.contains('{')
+        || host.to_ascii_uppercase().contains("CHANGE-ME")
         || host == "0.0.0.0"
         || host == "127.0.0.1"
         || host == "localhost"
@@ -110,7 +114,7 @@ fn host_before_port(line: &str, port: &str) -> Option<String> {
     let host: String = line[..index]
         .chars()
         .rev()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '{' | '}'))
         .collect();
     Some(host.chars().rev().collect())
 }

@@ -116,7 +116,7 @@ impl Controller {
         // call a host dead, which is why these observations carry an observer
         // and the diagnosis engine weighs them together (SPEC.md §50).
         if self.config().controller.observe {
-            let mut observer = RemoteObserver::new();
+            let mut observer = RemoteObserver::with_schedules(&self.config().probes);
             if let Some(entity) = self.observer_entity() {
                 observer = observer.observed_by(entity);
             }

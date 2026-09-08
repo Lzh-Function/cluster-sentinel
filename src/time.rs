@@ -24,6 +24,25 @@ pub fn to_rfc3339(ts: Timestamp) -> String {
     ts.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
+/// A duration in the largest whole unit that describes it exactly.
+///
+/// `humantime` renders 90 days as "2months 29days 2h 52m 48s", which is both
+/// correct and useless in a file someone is meant to read and edit. Anything
+/// that does not divide evenly falls back to humantime, which is right for the
+/// odd values nobody writes on purpose.
+pub fn format_duration(value: std::time::Duration) -> String {
+    let seconds = value.as_secs();
+    if value.subsec_nanos() != 0 || seconds == 0 {
+        return humantime::format_duration(value).to_string();
+    }
+    for (unit, size) in [("d", 86_400), ("h", 3_600), ("m", 60)] {
+        if seconds % size == 0 {
+            return format!("{}{unit}", seconds / size);
+        }
+    }
+    format!("{seconds}s")
+}
+
 /// Parse a canonical persisted timestamp.
 pub fn parse_rfc3339(s: &str) -> Result<Timestamp, chrono::ParseError> {
     Ok(DateTime::parse_from_rfc3339(s)?.with_timezone(&Utc))
@@ -32,6 +51,19 @@ pub fn parse_rfc3339(s: &str) -> Result<Timestamp, chrono::ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_are_written_in_units_a_person_would_use() {
+        use std::time::Duration;
+        assert_eq!(format_duration(Duration::from_secs(90 * 86_400)), "90d");
+        assert_eq!(format_duration(Duration::from_secs(3_600)), "1h");
+        assert_eq!(format_duration(Duration::from_secs(300)), "5m");
+        assert_eq!(format_duration(Duration::from_secs(15)), "15s");
+        // And everything it writes can be read back.
+        for text in ["90d", "1h", "5m", "15s"] {
+            assert!(humantime::parse_duration(text).is_ok(), "{text}");
+        }
+    }
 
     #[test]
     fn a_timestamp_survives_a_database_round_trip_exactly() {

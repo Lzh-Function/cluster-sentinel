@@ -14,6 +14,41 @@ Docker 疑似クラスタに対して 23 項目すべてが通ります。
 
 ### 横断的な事項
 
+* **監視頻度の設定**（新規機能、`[probes]`）。
+  コンパイル時の既定値は数百ノード・健全な network を想定したもので、
+  どこでも正しいわけではない。変更できなければ、
+  誤った頻度で動かすか動かさないかの二択になる。
+  * probe id ごとに `interval` / `timeout` / `max_outstanding` / `enabled`。
+  * 書かれていない probe は既定のまま。1 つ調整しても他に影響しない。
+  * override は `ProbeDefinition` 自体に適用する。decorator で包まないのは、
+    いくつかの probe が自分の timeout で実行コマンドを制限しているため。
+    runner だけが知る timeout は「同じ名前の別の値」になる。
+  * **`max_outstanding` は引き下げのみ。** `nfs.client.io` と
+    `journal.events` の同時実行 1 は、blocking syscall を積み上げないための
+    制約であり（`SPEC.md` §76）、設定ファイルで覆せない。
+  * 存在しない probe id は **error**。黙って無視されると
+    「変更したつもりで変わっていない」状態になる。
+  * controller の remote probe と agent の peer probe にも同じ override が効く。
+    観測者ごとに頻度が違うと quorum が異なる頻度の観測を比較することになる。
+  * `src/probes/catalog.rs` を probe 一覧の唯一の出所として追加。
+* **設定ファイルの自動生成**（新規機能）。
+  バイナリを持ち込んだ最初の 5 分が転記作業になっていた。
+  手順を印刷して人間に実行させると、飛ばされるのは必ず credential の行。
+  * `sentinel install <role>` が設定ファイル・systemd unit・
+    （controller のみ）cluster credential をまとめて生成する。
+  * 設定ファイルには **全設定が既定値のまま**、説明つきで書き出される。
+    値は `Config::default()` と probe catalog から生成するため、
+    バイナリが持っていない既定値をファイルが主張することはない。
+  * 書き換えが必要な行だけ `CHANGE-ME` が入る
+    （controller は 1 行、agent は 2 行）。
+  * **既存ファイルは上書きしない。** 二度実行しても安全で、
+    credential が入れ替わって全 agent が締め出されることもない。
+    `--force` を付けた場合のみ上書きする。
+  * credential は 32 byte 乱数、mode 0400。
+    agent には生成しない（クラスタの誰も知らない credential ができるため）。
+  * token の位置は `--config` の隣に決まる。unit の
+    `SENTINEL_TOKEN_FILE` も同じ場所を指す。
+  * `sentinel config init [--role R] [--output P] [--dry-run] [--force]`。
 * **記録の保持期間**（新規機能、`[retention]`）。
   database は書き込み一方で、削除する経路がコードのどこにも無かった。
   実測で 5 host あたり約 10 KB/s、host 1 台あたり 1 日約 170 MB。

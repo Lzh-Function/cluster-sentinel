@@ -10,9 +10,10 @@
 use std::sync::Arc;
 
 use crate::capability::CapabilitySet;
+use crate::config::ProbeSchedules;
 use crate::entity::{EntityId, EntityType, ManagedEntity};
 use crate::observation::Observation;
-use crate::probes::{ExecutionMode, Probe, ProbeContext, ProbeRunner, Skipped};
+use crate::probes::{ExecutionMode, HasDefinition, Probe, ProbeContext, ProbeRunner, Skipped};
 
 /// Where to reach an entity, and on which ports.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +82,18 @@ pub fn endpoint_for(entity: &ManagedEntity) -> Option<Endpoint> {
     })
 }
 
+/// Add a probe unless the operator has switched it off, applying their schedule.
+fn add<P>(probes: &mut Vec<Arc<dyn Probe>>, schedules: &ProbeSchedules, mut probe: P)
+where
+    P: Probe + HasDefinition + 'static,
+{
+    if !schedules.is_enabled(probe.definition().id.as_str()) {
+        return;
+    }
+    schedules.apply(probe.definition_mut());
+    probes.push(Arc::new(probe));
+}
+
 /// Runs remote probes against the entities the controller knows about.
 pub struct RemoteObserver {
     runner: ProbeRunner,
@@ -91,14 +104,27 @@ pub struct RemoteObserver {
 impl RemoteObserver {
     /// An observer with the built-in remote probes.
     pub fn new() -> Self {
+        Self::with_schedules(&ProbeSchedules::default())
+    }
+
+    /// An observer with the built-in remote probes, retuned by the operator.
+    ///
+    /// The definitions are changed rather than wrapped, so that a probe which
+    /// bounds its own work by its timeout sees the same value the runner does.
+    pub fn with_schedules(schedules: &ProbeSchedules) -> Self {
+        let mut probes: Vec<Arc<dyn Probe>> = Vec::new();
+        add(&mut probes, schedules, crate::probes::network::TcpProbe::reachability());
+        add(&mut probes, schedules, crate::probes::ssh::SshProbe::new());
+        add(
+            &mut probes,
+            schedules,
+            crate::probes::sentinel_rpc::SentinelAgentProbe::new(),
+        );
+        add(&mut probes, schedules, crate::probes::nfs::NfsPortProbe::new());
+
         Self {
             runner: ProbeRunner::new(),
-            probes: vec![
-                Arc::new(crate::probes::network::TcpProbe::reachability()),
-                Arc::new(crate::probes::ssh::SshProbe::new()),
-                Arc::new(crate::probes::sentinel_rpc::SentinelAgentProbe::new()),
-                Arc::new(crate::probes::nfs::NfsPortProbe::new()),
-            ],
+            probes,
             observer_entity: None,
         }
     }

@@ -153,6 +153,16 @@ dev/compose/    Docker 疑似クラスタ（M3 以降）
 | `gpu.nvidia` | GPU 一覧・温度・メモリ | `gpu.nvidia` | local |
 | `journal.events` | kernel / service event | `journal.read` | local（**同時 1**） |
 
+probe の一覧・既定スケジュール・説明は `src/probes/catalog.rs` が唯一の出所です。
+`sentinel config init` が書き出す設定ファイルも、`config check` が probe id の
+妥当性を判定するのもここを見ています。probe を追加したら catalog に追加してください
+（`every_probe_in_the_tree_is_listed` テストが強制します）。
+
+運用者が `[probes]` で頻度を変更できます。override は probe の
+`ProbeDefinition` 自体に適用されます。decorator で包まないのは、
+いくつかの probe が自分の timeout を使って実行するコマンドを制限しているためで、
+runner だけが知る timeout は「同じ名前の別の値」になってしまいます。
+
 ### journal probe
 
 kernel event（OOM / I/O error / hung task / NVMe timeout / GPU Xid /

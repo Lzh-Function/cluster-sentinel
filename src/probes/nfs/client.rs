@@ -292,6 +292,9 @@ impl Probe for NfsClientIoProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(NfsMountProbe, NfsClientIoProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;

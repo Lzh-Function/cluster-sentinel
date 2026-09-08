@@ -200,6 +200,9 @@ impl Probe for SshProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(SshProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;

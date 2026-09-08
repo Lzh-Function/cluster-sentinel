@@ -14,11 +14,13 @@
 //! can show it.
 
 mod precedence;
+mod probes;
 mod retention;
 mod tls;
 mod validate;
 
 pub use precedence::{Layered, ValueSource};
+pub use probes::{ProbeSchedule, ProbeSchedules};
 pub use retention::{RetentionConfig, RetentionPeriod};
 pub use tls::TlsConfig;
 pub use validate::{validate, Severity as IssueSeverity, ValidationIssue, ValidationReport};
@@ -118,6 +120,9 @@ pub struct Config {
     /// Transport security for the controller API.
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Per-probe schedule overrides, keyed by probe id.
+    #[serde(default)]
+    pub probes: ProbeSchedules,
 }
 
 fn default_environment() -> String {
@@ -143,6 +148,7 @@ impl Default for Config {
             },
             retention: RetentionConfig::default(),
             tls: TlsConfig::default(),
+            probes: ProbeSchedules::default(),
         }
     }
 }

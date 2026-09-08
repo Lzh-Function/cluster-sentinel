@@ -133,6 +133,11 @@ impl LocalProbes {
     }
 
     /// How many probes are scheduled.
+    /// The scheduled probes, so a caller can inspect the schedules in force.
+    pub fn probes(&self) -> impl Iterator<Item = &Arc<dyn Probe>> {
+        self.scheduled.iter().map(|s| &s.probe)
+    }
+
     pub fn len(&self) -> usize {
         self.scheduled.len()
     }

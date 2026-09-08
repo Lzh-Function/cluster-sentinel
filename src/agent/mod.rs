@@ -30,21 +30,41 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::capability::CapabilitySet;
-use crate::config::Config;
+use crate::config::{Config, ProbeSchedules};
 use crate::entity::{EntityKey, EntityType};
 use crate::observation::Observation;
+use crate::probes::{HasDefinition, Probe};
 use crate::protocol::{HeartbeatRequest, ObservationBatch, RegisterRequest};
 use crate::time::now;
 use crate::PROTOCOL_VERSION;
+
+/// Add a probe with the operator's schedule applied.
+///
+/// The definition is changed rather than wrapped, because several probes read
+/// their own timeout to bound the command they run: a schedule the runner
+/// enforced but the probe did not know about would be two different timeouts
+/// wearing one name.
+fn add_scheduled<P>(local: &mut LocalProbes, schedules: &ProbeSchedules, mut probe: P, parameters: serde_json::Value)
+where
+    P: Probe + HasDefinition + 'static,
+{
+    if !schedules.is_enabled(probe.definition().id.as_str()) {
+        return;
+    }
+    schedules.apply(probe.definition_mut());
+    local.add(Arc::new(probe), parameters);
+}
 
 /// Schedule one active filesystem probe per NFS mount.
 ///
 /// Per mount rather than per host, so each gets its own concurrency slot: one
 /// wedged filesystem must not stop the others being checked, and it must not
 /// accumulate a blocked thread every interval (SPEC.md §76).
-fn schedule_accelerator_probes(local: &mut LocalProbes) {
-    local.add(
-        Arc::new(crate::probes::gpu::NvidiaGpuProbe::new()),
+fn schedule_accelerator_probes(local: &mut LocalProbes, schedules: &ProbeSchedules) {
+    add_scheduled(
+        local,
+        schedules,
+        crate::probes::gpu::NvidiaGpuProbe::new(),
         serde_json::Value::Null,
     );
 }
@@ -55,14 +75,16 @@ fn schedule_accelerator_probes(local: &mut LocalProbes) {
 /// is the moment the host is least able to hand them over. By the time an
 /// operator comes to look, the evidence is already at the controller
 /// (SPEC.md §1, §83).
-fn schedule_journal_probes(local: &mut LocalProbes) {
-    local.add(
-        Arc::new(crate::probes::journal::JournalProbe::new()),
+fn schedule_journal_probes(local: &mut LocalProbes, schedules: &ProbeSchedules) {
+    add_scheduled(
+        local,
+        schedules,
+        crate::probes::journal::JournalProbe::new(),
         serde_json::Value::Null,
     );
 }
 
-fn schedule_storage_probes(local: &mut LocalProbes, inspector: &dyn SystemInspector) {
+fn schedule_storage_probes(local: &mut LocalProbes, schedules: &ProbeSchedules, inspector: &dyn SystemInspector) {
     use crate::probes::nfs::{NfsClientIoProbe, NfsMountProbe};
 
     let mounts: Vec<_> = inspector.mounts().into_iter().filter(|m| m.is_nfs()).collect();
@@ -71,12 +93,14 @@ fn schedule_storage_probes(local: &mut LocalProbes, inspector: &dyn SystemInspec
     }
 
     // One cheap probe describing every mount, read from /proc.
-    local.add(Arc::new(NfsMountProbe::new()), serde_json::Value::Null);
+    add_scheduled(local, schedules, NfsMountProbe::new(), serde_json::Value::Null);
 
     // And one active probe per mount.
     for mount in mounts {
-        local.add(
-            Arc::new(NfsClientIoProbe::new()),
+        add_scheduled(
+            local,
+            schedules,
+            NfsClientIoProbe::new(),
             serde_json::json!({ "mount_point": mount.target, "source": mount.source }),
         );
     }
@@ -156,10 +180,11 @@ impl Agent {
         // controller (see docs/adr/0001).
         let entity = EntityKey::new(&config.environment, EntityType::Host, &hostname).entity_id();
 
+        let schedules = &config.probes;
         let mut local_probes = LocalProbes::new(entity, capabilities.clone());
-        schedule_storage_probes(&mut local_probes, inspector.as_ref());
-        schedule_accelerator_probes(&mut local_probes);
-        schedule_journal_probes(&mut local_probes);
+        schedule_storage_probes(&mut local_probes, schedules, inspector.as_ref());
+        schedule_accelerator_probes(&mut local_probes, schedules);
+        schedule_journal_probes(&mut local_probes, schedules);
 
         Ok(Self {
             environment: config.environment.clone(),
@@ -180,7 +205,7 @@ impl Agent {
                 .listen
                 .rsplit_once(':')
                 .and_then(|(_, port)| port.parse().ok()),
-            peer_probes: PeerProbes::new(entity),
+            peer_probes: PeerProbes::with_schedules(entity, schedules),
             assignment_refreshed_at: None,
         })
     }

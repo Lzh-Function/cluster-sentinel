@@ -13,6 +13,21 @@ sentinel config check
 設定が使用不能な場合は非 0 で終了します。
 `sentinel config show` は実効設定を出力します。
 
+## 設定ファイルの作り方
+
+手で書き起こす必要はありません。
+
+```bash
+sentinel config init --role controller --output /etc/sentinel/config.toml
+sentinel config init --role agent      --output /etc/sentinel/config.toml
+```
+
+全設定が既定値のまま、説明つきで書き出されます。
+書き換えが必要なのは `CHANGE-ME` を含む行だけです。
+
+`sentinel install` は設定ファイル・systemd unit・credential をまとめて生成します。
+詳細は [DEPLOYMENT.md](DEPLOYMENT.md) を参照してください。
+
 ## 優先順位
 
 ```text
@@ -106,6 +121,55 @@ controller 側への追記は必要ありません。
 | キー | 型 | 既定値 |
 | --- | --- | --- |
 | `path` | path | `/var/lib/sentinel/sentinel.db` |
+
+### `[probes]`
+
+監視頻度を probe ごとに変更します。probe id をキーにしたテーブルです。
+
+```toml
+[probes."network.tcp"]
+interval = "10s"
+
+[probes."gpu.nvidia"]
+enabled = false
+```
+
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `interval` | duration | 実行間隔 |
+| `timeout` | duration | 1 回あたりの上限時間 |
+| `max_outstanding` | 整数 | 同一 target への同時実行数（**引き下げのみ可能**） |
+| `enabled` | bool | `false` でその probe を停止 |
+
+**書かれていない probe は既定のまま動きます。** 1 つだけ調整しても他には影響しません。
+未設定のキーも同様に既定値のままです。
+
+既定値（`sentinel config init` が生成する設定ファイルにも全件書き出されます）:
+
+| Probe | interval | timeout | 備考 |
+| --- | --- | --- | --- |
+| `network.tcp` | 5s | 3s | 到達性診断の土台 |
+| `sentinel.agent` | 5s | 3s | remote のみ |
+| `systemd.unit` | 10s | 5s | |
+| `host.metrics` | 15s | 5s | |
+| `ssh.service` | 15s | 5s | |
+| `gpu.nvidia` | 15s | 10s | |
+| `nfs.server.port` | 15s | 5s | |
+| `nfs.client.mount` | 30s | 5s | `/proc` のみ |
+| `nfs.client.io` | 30s | 10s | 同時実行 1（固定） |
+| `journal.events` | 30s | 10s | 同時実行 1（固定） |
+| `nfs.server.exports` | 60s | 5s | |
+
+**`max_outstanding` は引き下げしかできません。**
+`nfs.client.io` と `journal.events` は 1 に固定されています。
+blocking syscall が積み上がらないようにするためであり
+（`SPEC.md` §76、設計原則10）、設定ファイルで覆せません。
+
+存在しない probe id を書くと **error** になります。
+黙って無視されると「変更したつもりで変わっていない」状態になるためです。
+
+override は controller の remote probe と agent の peer probe にも同じく適用されます。
+観測者ごとに頻度が違うと、quorum が異なる頻度の観測を比較することになるためです。
 
 ### `[retention]`
 

@@ -11,7 +11,54 @@ pub async fn run(cli: &Cli, command: &ConfigCommand) -> anyhow::Result<i32> {
     match command {
         ConfigCommand::Check { json } => check(cli, *json),
         ConfigCommand::Show { json } => show(cli, *json),
+        ConfigCommand::Init {
+            role,
+            output,
+            dry_run,
+            force,
+        } => init(cli, role, output.as_deref(), *dry_run, *force),
     }
+}
+
+/// `sentinel config init`.
+pub fn init(
+    cli: &Cli,
+    role: &str,
+    output: Option<&std::path::Path>,
+    dry_run: bool,
+    force: bool,
+) -> anyhow::Result<i32> {
+    let role = super::generate::Role::parse(role)
+        .ok_or_else(|| anyhow::anyhow!("unknown role {role:?}; expected \"controller\" or \"agent\""))?;
+    let contents = super::generate::config_file(role);
+
+    if dry_run {
+        print!("{contents}");
+        return Ok(0);
+    }
+
+    let path = output.unwrap_or(cli.config.as_path());
+    // Never silently over an existing file: a configuration someone tuned is
+    // not something to lose to a mistyped command.
+    if path.exists() && !force {
+        anyhow::bail!(
+            "{} already exists; pass --force to overwrite, or --dry-run to see what would be written",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| anyhow::anyhow!("cannot create {}: {e}", parent.display()))?;
+        }
+    }
+    std::fs::write(path, &contents).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))?;
+
+    println!("wrote {} ({} 設定)", path.display(), role.as_str());
+    println!();
+    println!("次に:");
+    println!("  1. \"{}\" の行を書き換える", super::generate::PLACEHOLDER);
+    println!("  2. sentinel --config {} config check", path.display());
+    Ok(0)
 }
 
 #[derive(Debug, Serialize)]

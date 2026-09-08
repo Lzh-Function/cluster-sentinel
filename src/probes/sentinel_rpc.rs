@@ -174,6 +174,9 @@ impl Probe for SentinelAgentProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(SentinelAgentProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;

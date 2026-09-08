@@ -1,6 +1,15 @@
 # 設定ファイルテンプレート
 
-そのままコピーして使えるテンプレートです。
+**通常はこれらを使う必要はありません。**
+`sentinel install <role>` または `sentinel config init --role <role>` が、
+全設定を既定値のまま説明つきで書き出した設定ファイルを生成します。
+
+```bash
+sentinel config init --role agent --dry-run
+```
+
+ここにあるのは、バイナリを持ち込む前に構成を検討したい場合や、
+特定の構成（mutual TLS など）を先に確認したい場合の参考です。
 `CHANGE-ME` を実際の値に置き換えてください。
 
 | ファイル | 配置先 | 用途 |

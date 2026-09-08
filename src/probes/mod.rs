@@ -6,6 +6,7 @@
 //!
 //! Concrete probes live in submodules; the core only knows this interface.
 
+pub mod catalog;
 pub mod gpu;
 pub mod host;
 pub mod journal;
@@ -156,6 +157,31 @@ impl ProbeDefinition {
         capabilities.has_all(&self.required_capabilities)
     }
 }
+
+/// A probe whose schedule an operator may change.
+///
+/// Separate from [`Probe`] because it needs `&mut self`, which is gone by the
+/// time a probe has been put behind an `Arc`. Overrides are therefore applied
+/// at construction, before the probe is shared.
+pub trait HasDefinition {
+    /// The definition, mutably, so a schedule override can be applied to it.
+    fn definition_mut(&mut self) -> &mut ProbeDefinition;
+}
+
+/// Implement [`HasDefinition`] for a probe holding a `definition` field.
+macro_rules! configurable_probe {
+    ($($probe:ty),+ $(,)?) => {
+        $(
+            impl $crate::probes::HasDefinition for $probe {
+                fn definition_mut(&mut self) -> &mut $crate::probes::ProbeDefinition {
+                    &mut self.definition
+                }
+            }
+        )+
+    };
+}
+
+pub(crate) use configurable_probe;
 
 /// What a probe is told about the entity it is measuring.
 #[derive(Debug, Clone)]

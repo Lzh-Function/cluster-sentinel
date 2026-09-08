@@ -235,6 +235,9 @@ impl Probe for TcpProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(TcpProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,63 +11,45 @@ Cluster Sentinel を実際に運用するためのガイドです。
 
 ## 導入
 
-実クラスタへの導入手順は [DEPLOYMENT.md](DEPLOYMENT.md) に、
-コピーして使える設定テンプレートは [templates/](templates/) にあります。
-以下は要約です。
-
-### 1. バイナリの配置
-
 ```bash
-sudo install -m 0755 sentinel /usr/local/bin/sentinel
-sentinel version
+sudo install -m 0755 target/release/sentinel /usr/local/bin/sentinel
+sudo sentinel install controller     # または agent
 ```
 
-アーキテクチャが同じであれば、全 host に同じバイナリを配布できます。
+`install` は設定ファイル・systemd unit・（controller のみ）cluster credential を
+生成し、残りの手順を表示します。既存のファイルは上書きしません
+（`--force` を付けた場合のみ）。
 
-### 2. systemd unit の生成
-
-```bash
-sudo sentinel install controller     # controller host で
-sudo sentinel install agent          # 各 agent host で
-```
-
-`--dry-run` を付けると unit を出力するだけで書き込みません。
-
-生成される unit は既定で hardening 済みです
-（`NoNewPrivileges` / `ProtectSystem=strict` / `CapabilityBoundingSet=` 等）。
-Sentinel は read-only な監視 daemon であり、unit もそう宣言します。
-
-### 3. サービスユーザーと credential
+生成された設定ファイルには全設定が既定値のまま書き出されています。
+書き換えが必要なのは `CHANGE-ME` を含む行だけです。
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentinel
-sudo install -d -o sentinel -g sentinel -m 0750 /var/lib/sentinel
-sudo install -d -m 0755 /etc/sentinel
-
-head -c 32 /dev/urandom | base64 | sudo tee /etc/sentinel/token > /dev/null
-sudo chown sentinel:sentinel /etc/sentinel/token
-sudo chmod 0400 /etc/sentinel/token
-```
-
-**同一 credential を environment 内の全 host へ配布します。**
-credential 無しでは controller も agent も起動を拒否します。
-
-### 4. 設定と検証
-
-`/etc/sentinel/config.toml` を作成し、起動前に検証します
-（[CONFIGURATION.md](CONFIGURATION.md) 参照）。
-
-```bash
-sentinel config check
-```
-
-### 5. 起動
-
-```bash
+sudo -u sentinel sentinel config check
 sudo systemctl daemon-reload
-sudo systemctl enable --now sentinel-controller   # または sentinel-agent
-systemctl status sentinel-controller
+sudo systemctl enable --now sentinel-controller
 ```
+
+手順の詳細は [DEPLOYMENT.md](DEPLOYMENT.md) を参照してください。
+
+### 設定ファイルだけ生成する
+
+```bash
+sentinel config init --role agent --dry-run          # 中身を見る
+sentinel config init --role agent --output ./a.toml  # 書き出す
+```
+
+## 監視頻度の変更
+
+probe ごとに `[probes]` で変更します。書かれていない probe は既定のままです。
+
+```toml
+[probes."network.tcp"]
+interval = "15s"
+```
+
+生成された設定ファイルに全 probe の既定値がコメントアウトされて入っているので、
+変えたい行のコメントを外してください。
+一覧は [CONFIGURATION.md](CONFIGURATION.md) の `[probes]` にあります。
 
 ## 段階的な導入
 

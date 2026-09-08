@@ -5,6 +5,7 @@
 
 mod config_cmd;
 mod daemon_cmd;
+pub mod generate;
 mod install_cmd;
 mod run_cmd;
 mod status_cmd;
@@ -112,16 +113,22 @@ pub enum Command {
     Controller,
     /// Run the agent daemon.
     Agent,
-    /// Generate a systemd unit for a role.
+    /// Set this host up for a role: config file, systemd unit, directories.
     Install {
         /// `controller` or `agent`.
         role: String,
-        /// Where to write the unit.
+        /// Where to write the systemd unit.
         #[arg(long, default_value = "/etc/systemd/system")]
         output_dir: PathBuf,
-        /// Print the unit instead of writing it.
+        /// Print everything that would be written, without writing it.
         #[arg(long)]
         dry_run: bool,
+        /// Overwrite files that already exist.
+        #[arg(long)]
+        force: bool,
+        /// Do not generate a cluster credential on the controller.
+        #[arg(long)]
+        no_credential: bool,
     },
     /// Delete records that have outlived their retention period.
     Prune {
@@ -218,6 +225,21 @@ pub enum ConfigCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write a complete configuration file with every setting at its default.
+    Init {
+        /// `controller` or `agent`.
+        #[arg(long, default_value = "agent")]
+        role: String,
+        /// Where to write it. Defaults to the configured config path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Print it instead of writing it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Run the CLI. Returns the process exit code.
@@ -238,7 +260,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             role,
             output_dir,
             dry_run,
-        } => install_cmd::run(role, output_dir, &cli.config, *dry_run),
+            force,
+            no_credential,
+        } => install_cmd::run(
+            role,
+            output_dir,
+            &cli.config,
+            install_cmd::Options {
+                dry_run: *dry_run,
+                force: *force,
+                credential: !*no_credential,
+            },
+        ),
         Command::Prune {
             dry_run,
             vacuum,

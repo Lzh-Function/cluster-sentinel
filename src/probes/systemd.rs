@@ -185,6 +185,9 @@ impl Probe for SystemdProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(SystemdProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;

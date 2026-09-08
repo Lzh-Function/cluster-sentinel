@@ -181,8 +181,66 @@ pub fn validate(config: &Config) -> ValidationReport {
 
     validate_retention(config, &mut report);
     validate_tls(config, &mut report);
+    validate_probes(config, &mut report);
 
     report
+}
+
+/// Catch probe schedules that name a probe that does not exist, or that ask
+/// for a cadence nobody wants.
+fn validate_probes(config: &Config, report: &mut ValidationReport) {
+    for probe_id in config.probes.ids() {
+        let location = format!("probes.{probe_id:?}");
+
+        if !crate::probes::catalog::is_known(probe_id) {
+            // An unknown id would otherwise do nothing at all, which is the
+            // worst outcome for a typo: the operator believes they retuned a
+            // probe and nothing changed.
+            report.issues.push(ValidationIssue::error(
+                location.clone(),
+                format!(
+                    "unknown probe; known probes are: {}",
+                    crate::probes::catalog::ids().join(", ")
+                ),
+            ));
+            continue;
+        }
+
+        let Some(schedule) = config.probes.get(probe_id) else {
+            continue;
+        };
+
+        if let Some(interval) = schedule.interval {
+            if interval < std::time::Duration::from_secs(1) {
+                report.issues.push(ValidationIssue::warning(
+                    format!("{location}.interval"),
+                    "under a second: probes cost a syscall or a connection each, \
+                     and this one will spend more time being scheduled than measuring",
+                ));
+            }
+        }
+
+        // A timeout longer than the interval means a slow probe overlaps its
+        // own next run, which is how a stuck target turns into a growing pile
+        // of outstanding work.
+        let interval = schedule.interval;
+        let timeout = schedule.timeout;
+        if let (Some(interval), Some(timeout)) = (interval, timeout) {
+            if timeout > interval {
+                report.issues.push(ValidationIssue::warning(
+                    format!("{location}.timeout"),
+                    "longer than the interval: executions will overlap",
+                ));
+            }
+        }
+
+        if schedule.enabled == Some(false) {
+            report.issues.push(ValidationIssue::warning(
+                format!("{location}.enabled"),
+                "this probe is switched off; anything diagnosed from it will not be reported",
+            ));
+        }
+    }
 }
 
 /// Report TLS settings that cannot work, or that work but protect nothing.

@@ -185,6 +185,9 @@ impl Probe for NfsExportsProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(NfsPortProbe, NfsExportsProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;

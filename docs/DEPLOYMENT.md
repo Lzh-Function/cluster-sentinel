@@ -17,9 +17,10 @@ reboot・`systemctl restart`・mount 操作・`scontrol update` を実行しま�
 1. [事前確認](#1-事前確認)
 2. [構成の決定](#2-構成の決定)
 3. [バイナリの配置](#3-バイナリの配置)
-4. [共通の準備（全 host）](#4-共通の準備全-host)
-5. [Controller の構築](#5-controller-の構築)
+4. [Controller の構築](#4-controller-の構築)
+5. [cluster credential の配布](#5-cluster-credential-の配布)
 6. [Agent の展開](#6-agent-の展開)
+6.5 [監視頻度を変える](#65-監視頻度を変える)
 7. [段階的導入](#7-段階的導入)
 8. [SSH ポートが 22 でない場合](#8-ssh-ポートが-22-でない場合)
 9. [その他の非標準構成](#9-その他の非標準構成)
@@ -103,48 +104,61 @@ host ごとのビルドは不要です。
 
 ---
 
-## 4. 共通の準備（全 host）
+## 4. Controller の構築
 
-controller・agent の別なく、全 host で実施します。
+### 4.1 install
 
 ```bash
-# サービスユーザー（非特権）
+sudo sentinel install controller
+```
+
+これ 1 回で以下が生成されます。
+
+| 生成物 | 内容 |
+| --- | --- |
+| `/etc/sentinel/config.toml` | **全設定を既定値のまま書き出した設定ファイル**（説明つき） |
+| `/etc/systemd/system/sentinel-controller.service` | hardening 済み systemd unit |
+| `/etc/sentinel/token` | cluster credential（32 byte 乱数、mode 0400） |
+
+**既存のファイルは上書きしません。** バージョンアップ後にもう一度実行しても、
+調整済みの設定や credential はそのまま残ります
+（credential が入れ替わると全 agent が一斉に締め出されるため）。
+上書きしたい場合のみ `--force` を付けてください。
+
+内容を先に確認したい場合:
+
+```bash
+sentinel install controller --dry-run
+```
+
+credential を secret manager などで別管理している場合:
+
+```bash
+sudo sentinel install controller --no-credential
+```
+
+### 4.2 サービスユーザー
+
+`install` が実行後に案内しますが、以下は手で行う必要があります。
+
+```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentinel
-
-# ディレクトリ
 sudo install -d -o sentinel -g sentinel -m 0750 /var/lib/sentinel
-sudo install -d -m 0755 /etc/sentinel
+sudo chown -R sentinel:sentinel /etc/sentinel
 ```
 
-### cluster credential
+### 4.3 設定の仕上げ
 
-**environment 内の全 host で同一の値**を使用します。
-controller で 1 回生成し、安全な方法で配布してください。
+生成された `/etc/sentinel/config.toml` のうち、
+**書き換えが必要なのは `CHANGE-ME` を含む行だけ**です。
+controller の場合は `environment` の 1 行です。
 
-```bash
-# controller で 1 回だけ
-head -c 32 /dev/urandom | base64 | sudo tee /etc/sentinel/token > /dev/null
+それ以外はすべて既定値がそのまま書き出されており、
+変更したい行のコメントを外すか値を書き換えます。
+Slurm の外にある fileserver や依存関係は、
+ファイル内のコメント例を参考にしてください（§11 にも同じものがあります）。
 
-# 全 host で
-sudo chown sentinel:sentinel /etc/sentinel/token
-sudo chmod 0400 /etc/sentinel/token
-```
-
-> credential 無しでは controller も agent も **起動を拒否します**。
-> 未認証で動作するモードはありません。
-
-配布に scp を使う場合、経由地にファイルを残さないよう注意してください。
-
----
-
-## 5. Controller の構築
-
-### 5.1 設定ファイル
-
-`/etc/sentinel/config.toml` を作成します。
-テンプレートは [§11.1](#111-controller-etcsentinelconfigtoml) にあります。
-
-### 5.2 検証
+### 4.4 検証
 
 **起動前に必ず実行してください。**
 
@@ -159,23 +173,7 @@ sudo -u sentinel sentinel config check
 「宣言されていない entity への依存」は、
 Slurm discovery や agent registration から到着する予定のものであれば正常です。
 
-### 5.3 systemd unit
-
-```bash
-sudo sentinel install controller
-```
-
-生成される unit は hardening 済みです
-（`ProtectSystem=strict` / `NoNewPrivileges` / capability なし / 書き込み可能パスは 1 つ）。
-credential は unit に埋め込まれず、ファイルを参照します。
-
-内容を確認したい場合:
-
-```bash
-sentinel install controller --dry-run
-```
-
-### 5.4 起動
+### 4.5 起動
 
 ```bash
 sudo systemctl daemon-reload
@@ -184,7 +182,7 @@ systemctl status sentinel-controller
 journalctl -u sentinel-controller -f
 ```
 
-### 5.5 動作確認
+### 4.6 動作確認
 
 ```bash
 curl -fsS http://localhost:7443/v1/health
@@ -197,25 +195,56 @@ sentinel dependency list
 
 ---
 
+## 5. cluster credential の配布
+
+**environment 内の全 host で同一の値**を使用します。
+controller の `install` が生成したものを、各 host に配布してください。
+
+```bash
+sudo scp /etc/sentinel/token <host>:/etc/sentinel/token
+# 配布先で
+sudo chown sentinel:sentinel /etc/sentinel/token
+sudo chmod 0400 /etc/sentinel/token
+```
+
+> credential 無しでは controller も agent も **起動を拒否します**。
+> 未認証で動作するモードはありません。
+
+配布に scp を使う場合、経由地にファイルを残さないよう注意してください。
+
+`sentinel install agent` は credential を生成しません。
+agent が自前で生成すれば、クラスタの誰も知らない credential ができてしまい、
+「設定の問題」が「認証の失敗」として現れることになるためです。
+
+---
+
 ## 6. Agent の展開
 
-### 6.1 設定ファイル
+```bash
+sudo sentinel install agent
+```
 
-`/etc/sentinel/config.toml` を作成します。
-agent 側は非常に小さくて済みます（[§11.2](#112-agent-etcsentinelconfigtoml)）。
+生成物は設定ファイルと systemd unit です。
+書き換えが必要なのは `CHANGE-ME` を含む 2 行だけです。
+
+```toml
+environment = "CHANGE-ME-environment"                 # controller と一致させる
+controller_address = "CHANGE-ME-controller-host:7443" # controller のアドレス
+```
 
 capability は agent が自動検出するため、列挙する必要はありません。
 
-### 6.2 起動
-
 ```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentinel
+sudo install -d -o sentinel -g sentinel -m 0750 /var/lib/sentinel
+sudo chown -R sentinel:sentinel /etc/sentinel
+# credential を配置（§5）
 sudo -u sentinel sentinel config check
-sudo sentinel install agent
 sudo systemctl daemon-reload
 sudo systemctl enable --now sentinel-agent
 ```
 
-### 6.3 確認
+### 確認
 
 ```bash
 # この host が Sentinel からどう見えるか、capability の判定理由つき
@@ -229,6 +258,34 @@ sentinel entity show <hostname>
 「detected on this host」「not present on this host」
 「forced on by configuration」「suggested by a role」
 のいずれかを表示します。想定と違う場合はここで分かります。
+
+---
+
+## 6.5 監視頻度を変える
+
+生成された設定ファイルには全 probe の既定値が
+コメントアウトされた状態で書き出されています。
+変えたい行のコメントを外してください。
+
+```toml
+# 大規模クラスタで負荷を下げる
+[probes."network.tcp"]
+interval = "15s"
+
+# この環境では GPU を別系統で見ている
+[probes."gpu.nvidia"]
+enabled = false
+```
+
+書かれていない probe は既定のまま動きます。
+存在しない probe id を書くと `config check` が error にします
+（黙って無視されると「変更したつもりで変わっていない」状態になるため）。
+
+`max_outstanding` は引き下げしかできません。
+`nfs.client.io` と `journal.events` は同時実行 1 に固定されており、
+blocking syscall を積み上げないための制約は設定で覆せません。
+
+一覧は [CONFIGURATION.md](CONFIGURATION.md) の `[probes]` にあります。
 
 ---
 
@@ -603,7 +660,18 @@ sentinel diagnose
 
 ## 11. 設定ファイルテンプレート
 
-コピーして使えるテンプレートは [`docs/templates/`](templates/) にもあります。
+**通常は `sentinel install` または `sentinel config init` が生成するファイルを
+使ってください。** 全設定が既定値のまま説明つきで書き出され、
+書き換えが必要な行には `CHANGE-ME` が入っています。
+
+```bash
+sentinel config init --role controller --output /etc/sentinel/config.toml
+sentinel config init --role agent      --output /etc/sentinel/config.toml
+sentinel config init --role agent --dry-run   # 中身だけ見る
+```
+
+以下は、生成物を待たずに構成を先に検討したい場合の参考です。
+同じものが [`docs/templates/`](templates/) にもあります。
 
 ### 11.1 Controller (`/etc/sentinel/config.toml`)
 

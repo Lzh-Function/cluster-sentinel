@@ -342,6 +342,9 @@ impl Probe for JournalProbe {
     }
 }
 
+// Operators may retune this probe's schedule in [probes].
+crate::probes::configurable_probe!(JournalProbe);
+
 #[cfg(test)]
 mod tests {
     use super::*;
