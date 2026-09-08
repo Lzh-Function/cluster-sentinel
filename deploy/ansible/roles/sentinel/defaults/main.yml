@@ -32,6 +32,12 @@ sentinel_observer: false
 # controller 上の credential の場所。
 sentinel_token_source: /etc/sentinel/token
 
+# Release artefact per architecture. Hosts are matched on `ansible_architecture`,
+# so a cluster with both kinds needs no special handling in the inventory.
+sentinel_artefacts:
+  x86_64: sentinel-x86_64-unknown-linux-musl
+  aarch64: sentinel-aarch64-unknown-linux-musl
+
 sentinel_binary_path: /usr/local/bin/sentinel
 sentinel_config_dir: /etc/sentinel
 sentinel_download_dir: /tmp

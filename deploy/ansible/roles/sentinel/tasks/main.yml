@@ -23,15 +23,20 @@
 
 # The release carries one binary per architecture, and a cluster that has
 # grown over time has both.
+# Per host, not per run. A cluster that has grown over time has both, and
+# the release publishes one binary for each. Checked before the name is
+# built, so an architecture nobody publishes fails saying so rather than
+# quietly asking for a file that does not exist.
+- name: This architecture is one the release publishes
+  ansible.builtin.assert:
+    that: ansible_architecture in sentinel_artefacts
+    fail_msg: >-
+      {{ inventory_hostname }} is {{ ansible_architecture }}, and the release
+      publishes only {{ sentinel_artefacts.keys() | list | join(', ') }}.
+
 - name: Work out which release artefact this host needs
   ansible.builtin.set_fact:
-    sentinel_artefact: >-
-      sentinel-{{ 'x86_64' if ansible_architecture == 'x86_64' else 'aarch64' }}-unknown-linux-musl
-
-- name: This architecture is one we publish
-  ansible.builtin.assert:
-    that: ansible_architecture in ['x86_64', 'aarch64']
-    fail_msg: "unsupported architecture: {{ ansible_architecture }}"
+    sentinel_artefact: "{{ sentinel_artefacts[ansible_architecture] }}"
 
 - name: What is installed already, if anything
   ansible.builtin.command: "{{ sentinel_binary_path }} version"
