@@ -25,6 +25,16 @@ sentinel_interface: ""
 # UI 上のグループ分けにのみ使われます。probe を有効化することはありません。
 sentinel_roles: []
 
+# probe ごとの監視頻度の上書き。空なら既定のままです。
+#
+#   sentinel_probes:
+#     "network.tcp": { interval: "15s" }
+#     "gpu.nvidia":  { enabled: false }
+#
+# **controller にも同じ設定が要ります。** controller は remote probe を
+# 自分で実行するため、agent 側だけ変えても controller の観測頻度は変わりません。
+sentinel_probes: {}
+
 # この host を peer observer にするか。
 # observer は互いに異なる障害ドメインから 3 台以上選んでください。
 sentinel_observer: false

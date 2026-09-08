@@ -50,7 +50,10 @@
       https://github.com/{{ sentinel_repo }}/releases/download/{{ sentinel_version }}/{{ sentinel_artefact }}
     dest: "{{ sentinel_download_dir }}/{{ sentinel_artefact }}"
     mode: "0755"
-  when: sentinel_version not in (sentinel_installed.stdout | default(''))
+  # The tag carries a leading `v` and `sentinel version` does not, so this
+  # compares the numbers. Without the strip the test never matched and every
+  # run downloaded the binary again.
+  when: sentinel_version | regex_replace('^v', '') not in (sentinel_installed.stdout | default(''))
   register: sentinel_download
 
 - name: Fetch its checksum
@@ -158,13 +161,24 @@
     mode: "0640"
   notify: Restart sentinel-agent
 
-- name: Everything under /etc/sentinel belongs to the service user
+# Two tasks, not one with `recurse`. A recursive `file` task carrying a mode
+# applies that mode to the files as well as the directory, which turned the
+# 0400 credential into 0750 -- group-readable and executable -- and left every
+# subsequent run flipping it back and forth.
+- name: The configuration directory is the service user's
   ansible.builtin.file:
     path: "{{ sentinel_config_dir }}"
     state: directory
     owner: "{{ sentinel_user }}"
     group: "{{ sentinel_user }}"
     mode: "0750"
+
+- name: Everything in it belongs to the service user, keeping its own mode
+  ansible.builtin.file:
+    path: "{{ sentinel_config_dir }}"
+    state: directory
+    owner: "{{ sentinel_user }}"
+    group: "{{ sentinel_user }}"
     recurse: true
 
 # Before starting, not after. A node that fails to start because of a typo is

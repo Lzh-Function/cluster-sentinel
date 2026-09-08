@@ -245,6 +245,58 @@ ansible-playbook -i inventory.ini site.yml --limit node02
 | `sentinel_token_source` | `/etc/sentinel/token` | controller 上の credential |
 | `sentinel_download_dir` | `/tmp` | 一時ファイルの置き場 |
 
+## 何度実行しても同じ結果になります
+
+まっさらな host から 3 回連続で実行して確認しています。
+
+```
+1回目   changed=9
+2回目   changed=0
+3回目   changed=0
+```
+
+設定ファイルは**毎回テンプレートから全体を書き直します**（追記ではありません）。
+そのため:
+
+* 何度実行しても内容は増えません
+* **手で編集した内容は次回の実行で消えます。** 変更は
+  `inventory.ini` か `group_vars/` に書いてください
+
+credential は controller のものをそのまま配るだけで、生成も再生成もしません。
+
+## 監視頻度を変える
+
+`[probes]` は **controller と agent の両方**で必要です。controller は
+remote probe を自分で実行するため、agent 側だけ変えても controller の
+観測頻度は変わりません。
+
+agent 側は inventory に書けば全ノードに配られます。
+
+```ini
+[agents:vars]
+sentinel_probes = {"network.tcp": {"interval": "15s"}, "gpu.nvidia": {"enabled": false}}
+```
+
+`group_vars/agents/vars.yml` に書くほうが読みやすいでしょう。
+
+```yaml
+sentinel_probes:
+  "network.tcp":
+    interval: "15s"
+  "gpu.nvidia":
+    enabled: false
+```
+
+**controller には手で書いてください**（このロールは agent のみを扱います）。
+
+```bash
+sudo -u sentinel $EDITOR /etc/sentinel/config.toml
+sudo systemctl restart sentinel-controller
+```
+
+設定できる項目は
+[CONFIGURATION.md](../../docs/CONFIGURATION.md) の `[probes]` にあります。
+
 ## 検証
 
 ```bash
