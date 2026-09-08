@@ -59,7 +59,7 @@ fn unit(description: &str, exec_start: &str, writable: &[&str], token: &Path) ->
         "\
 [Unit]
 Description={description}
-Documentation=https://github.com/mizuno-lab/cluster-sentinel
+Documentation=https://github.com/Lzh-Function/cluster-sentinel
 After=network-online.target
 Wants=network-online.target
 

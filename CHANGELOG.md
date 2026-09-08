@@ -14,6 +14,27 @@ Docker 疑似クラスタに対して 23 項目すべてが通ります。
 
 ### 横断的な事項
 
+* **到達性 probe が capability を要求しなくなった**（バグ修正）。
+  実機導入で発覚。Slurm discovery で見つかった host は
+  `slurm.compute` しか持たないため、`network.tcp` を要求していた
+  reachability probe が **1 つも動いていなかった**。
+  結果として、**誰も接触していない host が HEALTHY と表示されていた**
+  （Slurm が IDLE と言っているだけ）。
+  * TCP 接続を開くのに相手側に必要なものは何も無い。必要なのはアドレスだけで、
+    それは呼び出し側が既に持っている。capability が門番をすべきなのは
+    `nvidia-smi` や `journalctl`、NFS export のように
+    **対象に何かが存在すること**を要求する probe である。
+  * これで agent の無い host も、controller と peer から実際に確認される。
+* **controller は自分自身の host を観測しない**（peer 割り当てと同じ理由）。
+  controller が「自分の host は応答する」と報告しても何も証明していない
+  （応答していなければ報告できない）。UNKNOWN のままにしておくほうが
+  「誰も独立に見ていない」という事実を正しく表し、
+  対処（そこに agent を置く / peer observer を付ける）を促す。
+* **Ansible ロール**（`deploy/ansible/`）。
+  ノードが 10 台を超えると手作業は現実的でない。
+  アーキテクチャ別のバイナリ取得・チェックサム検証・`sentinel install`・
+  credential 配布・`config check`・起動まで。
+  Sentinel 側に Ansible 固有のものは無い。
 * **報告アドレスの選択**（バグ修正 + 新規機能）。
   agent が報告するアドレスは peer が最初に叩く先であり、
   間違えると健全な host が到達不能に見える。
@@ -27,7 +48,7 @@ Docker 疑似クラスタに対して 23 項目すべてが通ります。
   * 到達不能なもの（loopback、link-local、`lo` 上の全アドレス）を除外し、
     物理 NIC を仮想 NIC より優先、IPv4 を IPv6 より優先する順位付けに変更。
   * **自動検出では答えられない問いがあることを明示した。**
-    `vlan10` / `vlan20` / `vlan32` を持つ host で、
+    `vlan101` / `vlan102` / `vlan103` を持つ host で、
     どれがクラスタ内通信を担うかは site の事実であり host の性質ではない。
     物理 NIC 候補が複数ある場合は **曖昧であると報告する**。
     黙って選ぶと、間違っていても気づけない。

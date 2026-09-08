@@ -43,6 +43,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sentinel-controller
 ```
 
+ノードが多い場合は [Ansible ロール](../deploy/ansible/) を使ってください。
+
 手順の詳細は [DEPLOYMENT.md](DEPLOYMENT.md) を参照してください。
 
 ### 設定ファイルだけ生成する

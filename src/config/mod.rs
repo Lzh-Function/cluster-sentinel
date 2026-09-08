@@ -500,14 +500,14 @@ mod tests {
         let config = parse(
             r#"
             config_version = 1
-            environment = "mizuno-lab"
+            environment = "example-lab"
 
             [agent]
             controller_address = "controller.example:7443"
             "#,
         )
         .expect("parse");
-        assert_eq!(config.environment, "mizuno-lab");
+        assert_eq!(config.environment, "example-lab");
         assert_eq!(
             config.agent.controller_address.as_deref(),
             Some("controller.example:7443")

@@ -93,11 +93,11 @@ grep -iE "^\s*(Port|ListenAddress)" /etc/ssh/sshd_config
 
 | 決めること | 例 | 備考 |
 | --- | --- | --- |
-| environment 名 | `mizuno-lab` | 全 host で一致させる |
-| controller を置く host | `parent` | source code には現れない。設定だけの問題 |
-| scheduler entity 名 | `mizuno_cluster` | Slurm の ClusterName に合わせると分かりやすい |
+| environment 名 | `example-lab` | 全 host で一致させる |
+| controller を置く host | `head01` | source code には現れない。設定だけの問題 |
+| scheduler entity 名 | `example_cluster` | Slurm の ClusterName に合わせると分かりやすい |
 | observer にする host | controller / fileserver / 一部 compute | **3 台以上**を推奨（後述） |
-| クラスタ内通信の NIC | `vlan20` など | NIC が複数あるなら必須（§9.7） |
+| クラスタ内通信の NIC | `vlan102` など | NIC が複数あるなら必須（§9.7） |
 | storage の依存関係 | どの node がどの fileserver を使うか | 誤診断を避けるために重要 |
 
 ### observer を 3 台以上にする理由
@@ -301,7 +301,7 @@ sudo -u sentinel sentinel dependency list
 **この時点で entity は 0 件です。これは正常です。**
 
 ```
-ENVIRONMENT: mizuno-group
+ENVIRONMENT: example-lab
 
 No entities known yet.
 ```
@@ -418,7 +418,7 @@ sudo sentinel doctor
 
 ```toml
 [agent]
-interface = "vlan20"
+interface = "vlan102"
 ```
 
 ### 6.4 検証と起動
@@ -449,6 +449,24 @@ sentinel status
 報告アドレスの行に `!` の警告が残っていないことも確認してください。
 
 ### 6.6 まとめて展開する場合
+
+**ノードが 10 台を超えるなら [Ansible ロール](../deploy/ansible/) を使ってください。**
+§3〜§6 をそのまま自動化してあり、アーキテクチャ別のバイナリ取得・
+チェックサム検証・credential 配布・`config check`・起動まで行います。
+
+```bash
+cd deploy/ansible
+cp inventory.example.ini inventory.ini
+$EDITOR inventory.ini
+ansible-playbook -i inventory.ini site.yml --limit node01   # まず 1 台
+ansible-playbook -i inventory.ini site.yml
+```
+
+Sentinel 側に Ansible 固有のものはありません。別の構成管理ツールなら、
+同じ手順（バイナリを置く → `sentinel install agent` → 設定と credential を配る）
+を移植してください。
+
+#### 手作業で配る場合
 
 ```bash
 for n in node01 node02 node03; do
@@ -569,7 +587,7 @@ sentinel entity show <hostname> --json | python3 -c 'import json,sys; print(json
 
 ```toml
 [agent]
-controller_address = "parent:7443"
+controller_address = "head01:7443"
 ssh_port = 2222        # sshd_config から読めない場合のみ
 ```
 
@@ -650,7 +668,7 @@ listen = "0.0.0.0:8443"
 
 # agent 側
 [agent]
-controller_address = "parent:8443"
+controller_address = "head01:8443"
 ```
 
 ### 9.3 Slurm NodeName と hostname が異なる
@@ -825,14 +843,14 @@ peer がこの host を probe するアドレスは、agent が自動検出し�
 ```
 $ ip -o addr show
 1: lo       inet 127.0.0.1/8
-2: eno8303  inet6 fe80::c6d6:d3ff:fe5c:8ec8/64
-6: vlan32   inet 192.168.32.2/24
-7: vlan20   inet 192.168.20.2/24     ← クラスタ内通信はこれ
-8: vlan10   inet 192.168.10.2/24
+2: eno1  inet6 fe80::5054:ff:fe12:3456/64
+6: vlan103   inet 192.0.2.32/24
+7: vlan102   inet 192.0.2.20/24     ← クラスタ内通信はこれ
+8: vlan101   inet 192.0.2.10/24
 9: wg0      inet 10.0.0.1/24
 ```
 
-この host を調べても、`vlan20` が答えだと分かる手がかりはありません。
+この host を調べても、`vlan102` が答えだと分かる手がかりはありません。
 そのため Sentinel は **候補が複数あることを報告し、選択を求めます。**
 
 ```bash
@@ -840,13 +858,13 @@ sentinel doctor
 ```
 
 ```
-Address:     192.168.10.2
-  -> vlan10           192.168.10.2
-     vlan20           192.168.20.2
-     vlan32           192.168.32.2
+Address:     192.0.2.10
+  -> vlan101           192.0.2.10
+     vlan102           192.0.2.20
+     vlan103           192.0.2.32
      wg0              10.0.0.1
   ! several interfaces could be the one peers reach this host on
-    (vlan10, vlan20, vlan32); 192.168.10.2 was chosen by name order.
+    (vlan101, vlan102, vlan103); 192.0.2.10 was chosen by name order.
     Set [agent] interface to say which.
 ```
 
@@ -854,7 +872,7 @@ Address:     192.168.10.2
 
 ```toml
 [agent]
-interface = "vlan20"
+interface = "vlan102"
 ```
 
 NAT 越しなど host 自身から見えないアドレスの場合は直接指定します。
@@ -870,13 +888,13 @@ agent がいない host は、これまでどおり `[[entities]]` の `addresse
 [[entities]]
 type = "host"
 name = "filesrv01"
-addresses = ["192.168.20.30"]
+addresses = ["192.0.2.30"]
 ```
 
 #### 指定しないとどうなるか
 
 「物理 NIC に見えるもののうち名前順で最初」が選ばれます。
-上の例では `vlan10` です。**多くの場合これは間違いです。**
+上の例では `vlan101` です。**多くの場合これは間違いです。**
 
 除外されるものは決まっています（ここは自動で正しく処理されます）。
 
@@ -982,7 +1000,7 @@ sentinel config init --role agent --dry-run   # 中身だけ見る
 config_version = 1
 
 # 全 host で一致させること
-environment = "mizuno-lab"
+environment = "example-lab"
 
 [controller]
 listen = "0.0.0.0:7443"
@@ -1020,7 +1038,7 @@ min_severity = "warning"
 # ---------------------------------------------------------------------------
 [[entities]]
 type = "scheduler"
-name = "mizuno_cluster"
+name = "example_cluster"
 
 # ---------------------------------------------------------------------------
 # Slurm の外にある host
@@ -1079,18 +1097,18 @@ type = "provides"
 
 # filesrv01 を使う node
 [[dependencies]]
-from = "host/creator2"
+from = "host/node02"
 to   = "storage/filesrv01-storage"
 type = "uses_storage"
 
 [[dependencies]]
-from = "host/creator3"
+from = "host/node03"
 to   = "storage/filesrv01-storage"
 type = "uses_storage"
 
 # filesrv02 を使う node
 [[dependencies]]
-from = "host/creator5"
+from = "host/node05"
 to   = "storage/filesrv02-storage"
 type = "uses_storage"
 
@@ -1110,10 +1128,10 @@ capability は自動検出されます。
 config_version = 1
 
 # controller と一致させること
-environment = "mizuno-lab"
+environment = "example-lab"
 
 [agent]
-controller_address = "parent:7443"
+controller_address = "head01:7443"
 spool_path = "/var/lib/sentinel/spool.db"
 
 # health endpoint。peer がここを見て
@@ -1140,7 +1158,7 @@ roles = ["compute"]
 ```toml
 # controller
 config_version = 1
-environment = "mizuno-lab"
+environment = "example-lab"
 
 [controller]
 listen = "0.0.0.0:7443"
@@ -1155,10 +1173,10 @@ enabled = true
 ```toml
 # agent
 config_version = 1
-environment = "mizuno-lab"
+environment = "example-lab"
 
 [agent]
-controller_address = "parent:7443"
+controller_address = "head01:7443"
 ```
 
 ---
