@@ -268,6 +268,22 @@ pub struct AgentConfig {
     /// Roles, used only for UI grouping and default hints (SPEC.md §14, §15).
     #[serde(default)]
     pub roles: Vec<String>,
+    /// The address to report to the controller, overriding detection.
+    ///
+    /// Detection has to guess which of a host's interfaces other machines
+    /// reach it on, and on a node with container bridges, an IPMI interface or
+    /// several fabrics it can guess wrong. This is how an operator settles it.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The interface whose addresses to report, overriding detection.
+    ///
+    /// Preferable to `address` on a fleet, because one line works on every
+    /// node. If the named interface has no usable address, the agent reports
+    /// **no** address and says so, rather than falling back to a different
+    /// network: peers probing the wrong fabric is the fault this exists to
+    /// prevent.
+    #[serde(default)]
+    pub interface: Option<String>,
     /// The port `sshd` listens on, when it is not the default and cannot be
     /// read from `sshd_config`.
     ///
@@ -293,6 +309,8 @@ impl Default for AgentConfig {
             controller_address: None,
             spool_path: None,
             roles: Vec::new(),
+            address: None,
+            interface: None,
             ssh_port: None,
             listen: default_agent_listen(),
         }

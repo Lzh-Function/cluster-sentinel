@@ -591,7 +591,85 @@ TLS 材料が読めない場合、controller は**起動に失敗します**。
 詳細は [SECURITY.md](SECURITY.md) と
 [CONFIGURATION.md](CONFIGURATION.md) の `[tls]` を参照してください。
 
-### 9.7 database の保持期間
+### 9.7 NIC が複数ある場合（VLAN・bridge・複数 fabric）
+
+peer がこの host を probe するアドレスは、agent が自動検出します。
+ただし **「どの NIC がクラスタ内通信を担っているか」は自動では分かりません。**
+それは host の性質ではなく site の事実です。
+
+```
+$ ip -o addr show
+1: lo       inet 127.0.0.1/8
+2: eno8303  inet6 fe80::c6d6:d3ff:fe5c:8ec8/64
+6: vlan32   inet 192.168.32.2/24
+7: vlan20   inet 192.168.20.2/24     ← クラスタ内通信はこれ
+8: vlan10   inet 192.168.10.2/24
+9: wg0      inet 10.0.0.1/24
+```
+
+この host を調べても、`vlan20` が答えだと分かる手がかりはありません。
+そのため Sentinel は **候補が複数あることを報告し、選択を求めます。**
+
+```bash
+sentinel doctor
+```
+
+```
+Address:     192.168.10.2
+  -> vlan10           192.168.10.2
+     vlan20           192.168.20.2
+     vlan32           192.168.32.2
+     wg0              10.0.0.1
+  ! several interfaces could be the one peers reach this host on
+    (vlan10, vlan20, vlan32); 192.168.10.2 was chosen by name order.
+    Set [agent] interface to say which.
+```
+
+**指定してください。** fleet 全体で同じ 1 行が使えます。
+
+```toml
+[agent]
+interface = "vlan20"
+```
+
+NAT 越しなど host 自身から見えないアドレスの場合は直接指定します。
+
+```toml
+[agent]
+address = "203.0.113.9"
+```
+
+agent がいない host は、これまでどおり `[[entities]]` の `addresses` で宣言します。
+
+```toml
+[[entities]]
+type = "host"
+name = "filesrv01"
+addresses = ["192.168.20.30"]
+```
+
+#### 指定しないとどうなるか
+
+「物理 NIC に見えるもののうち名前順で最初」が選ばれます。
+上の例では `vlan10` です。**多くの場合これは間違いです。**
+
+除外されるものは決まっています（ここは自動で正しく処理されます）。
+
+* loopback アドレス（`127.0.0.0/8`、`::1`）
+* link-local（`169.254.0.0/16`、`fe80::/10`）
+* **`lo` インターフェース上の全アドレス** — WSL の `10.255.255.254/32` のように、
+  loopback アドレスではないが誰からも到達できないもの
+* `docker*` / `br-*` / `veth*` / `virbr*` / `wg*` / `tailscale*` などは後順位
+
+#### 指定した NIC にアドレスが無い場合
+
+**アドレスを報告しません。別の NIC にフォールバックしません。**
+運用者が選ばなかったネットワークに peer 全員を向けるのが、
+この設定で防ぎたい障害そのものだからです。
+
+controller は host 名にフォールバックし、`doctor` が理由と実在する候補を表示します。
+
+### 9.8 database の保持期間
 
 controller の database は書き込み一方で、既定では
 observation 14 日 / transition 90 日 / 解決済み incident 180 日で prune されます。

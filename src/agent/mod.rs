@@ -10,6 +10,7 @@
 //! heartbeats tolerate gaps, and observations go to a local spool that is
 //! replayed on reconnection.
 
+pub mod addressing;
 pub mod client;
 pub mod discovery;
 pub mod local_probes;
@@ -154,6 +155,8 @@ pub struct Agent {
     peer_probes: PeerProbes,
     /// When the assignment was last refreshed.
     assignment_refreshed_at: Option<std::time::Instant>,
+    /// The `[agent]` section, for settings consulted after construction.
+    agent_config: crate::config::AgentConfig,
 }
 
 impl Agent {
@@ -207,6 +210,7 @@ impl Agent {
                 .and_then(|(_, port)| port.parse().ok()),
             peer_probes: PeerProbes::with_schedules(entity, schedules),
             assignment_refreshed_at: None,
+            agent_config: config.agent.clone(),
         })
     }
 
@@ -401,13 +405,22 @@ impl Agent {
             hostname: self.hostname.clone(),
             fqdn: self.inspector.fqdn(),
             boot_id: self.inspector.boot_id(),
-            addresses: self.inspector.addresses(),
+            addresses: self.address_choice().addresses,
             ports: self.service_ports(),
             capabilities: self.capabilities.clone(),
             hardware: serde_json::to_value(discovery::hardware(self.inspector.as_ref(), gpus))
                 .unwrap_or(serde_json::Value::Null),
             roles: self.roles.clone(),
         }
+    }
+
+    /// Which addresses this agent reports, and why.
+    ///
+    /// Recomputed rather than cached: an interface can come up after the agent
+    /// starts, and a host that only becomes reachable later should say so at
+    /// its next registration rather than at its next restart.
+    pub fn address_choice(&self) -> addressing::AddressChoice {
+        addressing::choose(self.inspector.as_ref(), &self.agent_config)
     }
 
     /// Register with the controller.

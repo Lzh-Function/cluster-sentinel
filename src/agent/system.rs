@@ -60,6 +60,115 @@ pub struct HardwareSummary {
     pub kernel: Option<String>,
 }
 
+/// One address, and the interface it is configured on.
+///
+/// The interface name matters as much as the address. A host reporting where
+/// it can be reached must not offer an address on `lo`, and a virtual bridge
+/// address is a worse answer than a physical interface's -- neither of which
+/// can be told from the address alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceAddress {
+    /// Interface name, as the kernel reports it.
+    pub interface: String,
+    /// The address configured on it.
+    pub address: String,
+}
+
+impl InterfaceAddress {
+    /// Build one.
+    pub fn new(interface: impl Into<String>, address: impl Into<String>) -> Self {
+        Self {
+            interface: interface.into(),
+            address: address.into(),
+        }
+    }
+}
+
+/// Interface name prefixes that belong to something virtual.
+///
+/// Not an exhaustive list and not meant to be: it demotes the ones that show
+/// up on ordinary cluster nodes, so that a container bridge does not outrank
+/// the network the cluster actually runs on. Anything unrecognised is treated
+/// as real, because being wrong in that direction only costs ordering, while
+/// the reverse would hide a genuine interface.
+const VIRTUAL_INTERFACE_PREFIXES: &[&str] = &[
+    "docker",
+    "br-",
+    "veth",
+    "virbr",
+    "vboxnet",
+    "tailscale",
+    "zt",
+    "cni",
+    "flannel",
+    "podman",
+    "lxc",
+    "lxd",
+    "tun",
+    "tap",
+    "wg",
+    "kube",
+];
+
+/// Whether an interface looks like something a hypervisor or container runtime
+/// created rather than something cabled to a switch.
+pub fn is_virtual_interface_name(name: &str) -> bool {
+    VIRTUAL_INTERFACE_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
+/// Whether an address tells another machine nothing about how to reach this one.
+fn is_unreachable_address(address: &str) -> bool {
+    match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_link_local() || ip.is_unspecified(),
+        // `is_unicast_link_local` is the fe80::/10 test; those are only
+        // meaningful with a scope identifier this does not carry.
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.is_unspecified() || (ip.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => true,
+    }
+}
+
+/// Order addresses so the first is the one most likely to reach this host.
+///
+/// The first is what a peer will actually probe, so getting it wrong makes a
+/// healthy host look unreachable. Three rules, in order:
+///
+/// 1. **Drop what cannot be reached from elsewhere.** Loopback, link-local,
+///    and -- the case that motivated this -- anything on the loopback
+///    *interface*. A non-loopback address on `lo` is a real configuration
+///    (WSL and some routers do it) and is reachable by nobody.
+/// 2. **Physical interfaces before virtual ones.** A node with Docker
+///    installed has a bridge address that sorts ahead of the cluster network
+///    on many sites.
+/// 3. **IPv4 before IPv6**, then a stable order, so the answer does not move
+///    between restarts.
+///
+/// This is a heuristic and says so. `[agent] address` and `[agent] interface`
+/// exist because a heuristic is not good enough when it is wrong.
+pub fn rank_addresses(addresses: Vec<InterfaceAddress>) -> Vec<String> {
+    let mut usable: Vec<InterfaceAddress> = addresses
+        .into_iter()
+        .filter(|entry| entry.interface != "lo" && !is_unreachable_address(&entry.address))
+        .collect();
+
+    usable.sort_by(|a, b| {
+        let rank = |entry: &InterfaceAddress| {
+            (
+                is_virtual_interface_name(&entry.interface),
+                entry.address.contains(':'),
+                entry.interface.clone(),
+                entry.address.clone(),
+            )
+        };
+        rank(a).cmp(&rank(b))
+    });
+
+    let mut out: Vec<String> = usable.into_iter().map(|entry| entry.address).collect();
+    out.dedup();
+    out
+}
+
 /// The agent's window onto the local system.
 pub trait SystemInspector: Send + Sync {
     /// Short host name.
@@ -68,8 +177,16 @@ pub trait SystemInspector: Send + Sync {
     fn fqdn(&self) -> Option<String>;
     /// Linux boot id; changes on reboot.
     fn boot_id(&self) -> Option<String>;
-    /// Addresses this host answers on.
-    fn addresses(&self) -> Vec<String>;
+    /// Every address configured, with the interface it is on.
+    fn interface_addresses(&self) -> Vec<InterfaceAddress>;
+
+    /// Addresses this host answers on, best first.
+    ///
+    /// The first is what peers will probe, so the ordering is part of the
+    /// answer rather than a presentation detail.
+    fn addresses(&self) -> Vec<String> {
+        rank_addresses(self.interface_addresses())
+    }
     /// Whether a path exists.
     fn path_exists(&self, path: &Path) -> bool;
     /// Locate an executable on `PATH`.
@@ -117,19 +234,17 @@ impl SystemInspector for LinuxInspector {
             .filter(|id| !id.is_empty())
     }
 
-    fn addresses(&self) -> Vec<String> {
+    fn interface_addresses(&self) -> Vec<InterfaceAddress> {
         let Ok(interfaces) = if_addrs::get_if_addrs() else {
             return Vec::new();
         };
-        let mut addresses: Vec<String> = interfaces
+        // Everything is reported; `rank_addresses` decides what is usable.
+        // Filtering here would throw away the interface name, which is the
+        // only thing that tells a bridge from a cable.
+        interfaces
             .into_iter()
-            // Loopback tells no one anything about reachability.
-            .filter(|i| !i.is_loopback())
-            .map(|i| i.addr.ip().to_string())
-            .collect();
-        addresses.sort();
-        addresses.dedup();
-        addresses
+            .map(|i| InterfaceAddress::new(i.name, i.addr.ip().to_string()))
+            .collect()
     }
 
     fn path_exists(&self, path: &Path) -> bool {
@@ -233,8 +348,10 @@ pub struct FakeInspector {
     pub fqdn: Option<String>,
     /// Boot id to report.
     pub boot_id: Option<String>,
-    /// Addresses to report.
+    /// Addresses to report, as if all on one physical interface.
     pub addresses: Vec<String>,
+    /// Addresses with their interfaces, when a test cares which is which.
+    pub interface_addresses: Vec<InterfaceAddress>,
     /// Paths that exist.
     pub paths: BTreeMap<String, bool>,
     /// Executables on `PATH`.
@@ -295,6 +412,18 @@ impl FakeInspector {
         self
     }
 
+    /// Builder: drop the default addresses, so only interfaces given here count.
+    pub fn without_addresses(mut self) -> Self {
+        self.addresses.clear();
+        self
+    }
+
+    /// Builder: add an address on a named interface.
+    pub fn with_interface_address(mut self, interface: &str, address: &str) -> Self {
+        self.interface_addresses.push(InterfaceAddress::new(interface, address));
+        self
+    }
+
     /// Builder: set the host name.
     pub fn with_hostname(mut self, hostname: &str) -> Self {
         self.hostname = Some(hostname.to_string());
@@ -321,8 +450,17 @@ impl SystemInspector for FakeInspector {
         self.boot_id.clone()
     }
 
-    fn addresses(&self) -> Vec<String> {
-        self.addresses.clone()
+    fn interface_addresses(&self) -> Vec<InterfaceAddress> {
+        if !self.interface_addresses.is_empty() {
+            return self.interface_addresses.clone();
+        }
+        // Addresses given without an interface are taken at face value: a test
+        // that says "this host answers here" should not have its answer
+        // reordered by a heuristic it did not ask for.
+        self.addresses
+            .iter()
+            .map(|address| InterfaceAddress::new("eth0", address))
+            .collect()
     }
 
     fn path_exists(&self, path: &Path) -> bool {

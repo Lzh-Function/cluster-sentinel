@@ -116,6 +116,50 @@ controller 側への追記は必要ありません。
 
 `roles` は probe を有効化しません。後述の「Capability」を参照してください。
 
+#### アドレスの決まり方
+
+peer がこの host を probe するアドレスは、次の順で決まります。
+
+| 優先 | 設定 | 用途 |
+| --- | --- | --- |
+| 1 | `[agent] address` | アドレスを直接指定。NAT 越しなど、host 自身から見えない場合 |
+| 2 | `[agent] interface` | NIC 名で指定。**fleet 全体で同じ 1 行が使えるので推奨** |
+| 3 | 自動検出 | 下記の規則で順位付け |
+
+自動検出は次を行います。
+
+1. **到達不能なものを除外** — loopback アドレス、link-local（`169.254.0.0/16`、
+   `fe80::/10`）、および **`lo` インターフェース上の全アドレス**。
+   `lo` に付いた非 loopback アドレス（WSL の `10.255.255.254/32` など）は
+   誰からも到達できません
+2. **物理 NIC を仮想 NIC より優先** — `docker*` / `br-*` / `veth*` / `virbr*` /
+   `wg*` / `tailscale*` などは後ろに回します
+3. IPv4 を IPv6 より優先し、以降は名前順（再起動しても順序が変わらないように）
+
+**自動検出は「どの NIC がクラスタ内通信を担っているか」を答えられません。**
+それは host の性質ではなく site の事実です。
+`vlan10` / `vlan20` / `vlan32` を持つ host では、どれも同じくらい妥当に見えます。
+
+そのため、**物理 NIC の候補が 2 つ以上ある場合は「曖昧である」と報告します。**
+黙って 1 つ選ぶと、間違っていても気づけないためです。
+`sentinel doctor` が候補一覧とともに表示します。
+
+```
+Address:     192.168.10.2
+  -> vlan10           192.168.10.2
+     vlan20           192.168.20.2
+     vlan32           192.168.32.2
+     wg0              10.0.0.1
+  ! several interfaces could be the one peers reach this host on
+    (vlan10, vlan20, vlan32); 192.168.10.2 was chosen by name order.
+    Set [agent] interface to say which.
+```
+
+`interface` で指定した NIC に使えるアドレスが無い場合、
+**アドレスを報告しません**（別の NIC にフォールバックしません）。
+運用者が選ばなかったネットワークに peer を向けるのが、この設定で防ぎたい障害だからです。
+その場合 controller は host 名にフォールバックし、`doctor` が理由を表示します。
+
 ### `[database]`
 
 | キー | 型 | 既定値 |

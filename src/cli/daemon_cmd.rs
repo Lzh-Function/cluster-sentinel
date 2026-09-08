@@ -194,12 +194,25 @@ pub async fn doctor(cli: &Cli, json: bool) -> anyhow::Result<i32> {
         })
         .collect();
 
+    // The address is the first thing every peer uses and the last thing anyone
+    // checks, so `doctor` shows which one would be reported and what else was
+    // available, not merely the list.
+    let address_choice = crate::agent::addressing::choose(&inspector, &config.agent);
+    let candidates: Vec<serde_json::Value> = address_choice
+        .candidates
+        .iter()
+        .map(|c| serde_json::json!({ "interface": c.interface, "address": c.address }))
+        .collect();
+
     let report = serde_json::json!({
         "environment": config.environment,
         "hostname": inspector.hostname(),
         "fqdn": inspector.fqdn(),
         "boot_id": inspector.boot_id(),
-        "addresses": inspector.addresses(),
+        "address_reported": address_choice.primary(),
+        "address_candidates": candidates,
+        "address_warning": address_choice.warning(),
+        "addresses": address_choice.addresses,
         "hardware": inspector.hardware(),
         "mounts": inspector.mounts().len(),
         "controller": config.agent.controller_address,
@@ -230,6 +243,26 @@ pub async fn doctor(cli: &Cli, json: bool) -> anyhow::Result<i32> {
             "NOT CONFIGURED"
         }
     );
+    println!(
+        "Address:     {}",
+        address_choice
+            .primary()
+            .unwrap_or("(none — the controller will use this host's name)")
+    );
+    if address_choice.candidates.len() > 1 {
+        for candidate in &address_choice.candidates {
+            let mark = if Some(candidate.address.as_str()) == address_choice.primary() {
+                "->"
+            } else {
+                "  "
+            };
+            println!("  {mark} {:<16} {}", candidate.interface, candidate.address);
+        }
+    }
+    if let Some(warning) = address_choice.warning() {
+        println!("  ! {warning}");
+    }
+
     println!("\nCapabilities");
     println!("{}", "\u{2500}".repeat(60));
     for (capability, reason) in &resolution.reasons {
