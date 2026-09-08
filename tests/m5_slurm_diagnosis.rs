@@ -127,6 +127,45 @@ async fn a_drained_node_is_diagnosed_as_slurm_only() {
 }
 
 #[tokio::test]
+async fn undraining_a_node_takes_its_classification_away() {
+    // A label that outlives the fault it describes is worse than no label at
+    // all: an operator cannot tell a stale one from a live one, so every label
+    // on the status board becomes untrustworthy.
+    let mut controller = cluster(
+        "NodeName=n1 State=IDLE+DRAIN Reason=scheduled maintenance [operator@2026-09-07T10:00:00]\n",
+        "Slurmctld(primary) at ctl-a is UP",
+    )
+    .await;
+    set_host_health(&mut controller, "n1", true).await;
+
+    controller.diagnose_and_classify().await.expect("diagnose");
+    let host = EntityKey::new("lab", EntityType::Host, "n1").entity_id();
+    assert!(controller
+        .engine()
+        .state(host)
+        .expect("state")
+        .has_classification(classification::SCHEDULER_DEGRADED));
+
+    // The operator resumes the node.
+    let view = view("NodeName=n1 State=IDLE\n", "Slurmctld(primary) at ctl-a is UP");
+    controller
+        .ingest_observations(&observations_from_view("lab", "test-cluster", &view))
+        .await
+        .expect("slurm observations");
+    set_host_health(&mut controller, "n1", true).await;
+
+    let diagnoses = controller.diagnose_and_classify().await.expect("diagnose");
+    assert!(diagnoses.is_empty(), "{diagnoses:#?}");
+
+    let state = controller.engine().state(host).expect("state");
+    assert!(
+        state.classifications.is_empty(),
+        "classification outlived the drain: {:?}",
+        state.classifications
+    );
+}
+
+#[tokio::test]
 async fn a_dead_slurmd_is_diagnosed_as_a_service_failure_not_a_host_failure() {
     // SPEC.md §170.
     let mut controller = cluster(

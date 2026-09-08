@@ -264,6 +264,23 @@ impl EntityState {
         }
     }
 
+    /// Replace every classification with the ones currently justified.
+    ///
+    /// Classifications are derived from diagnosis, and diagnosis is recomputed
+    /// from scratch each cycle, so they have to be *replaced* rather than
+    /// accumulated. Adding without ever removing leaves an entity wearing the
+    /// label of a fault that has since been repaired -- a stale label is worse
+    /// than no label, because an operator cannot tell it from a live one.
+    pub fn set_classifications(&mut self, classifications: impl IntoIterator<Item = Classification>) {
+        let mut replacement: Vec<Classification> = Vec::new();
+        for classification in classifications {
+            if !replacement.contains(&classification) {
+                replacement.push(classification);
+            }
+        }
+        self.classifications = replacement;
+    }
+
     /// Whether the entity carries a given classification.
     pub fn has_classification(&self, name: &str) -> bool {
         self.classifications.iter().any(|c| c.as_str() == name)

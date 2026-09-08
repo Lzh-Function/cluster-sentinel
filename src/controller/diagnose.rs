@@ -11,7 +11,7 @@ use crate::diagnosis::{Diagnosis, DiagnosisContext, ObservationIndex};
 use crate::entity::EntityId;
 use crate::incident::IncidentUpdate;
 use crate::persistence::StoreError;
-use crate::state::EntityState;
+use crate::state::{Classification, EntityState};
 
 use super::Controller;
 
@@ -67,17 +67,30 @@ impl Controller {
     /// A classification is the short machine-readable label an operator sees
     /// next to an entity. It comes from the diagnosis rather than from a probe,
     /// because only a rule has looked at enough evidence to justify one.
+    ///
+    /// Every entity is rewritten, including the ones this cycle said nothing
+    /// about: a diagnosis that no longer fires must take its label with it.
     pub async fn diagnose_and_classify(&mut self) -> Result<Vec<Diagnosis>, StoreError> {
         let diagnoses = self.diagnose().await?;
 
+        let mut implied: BTreeMap<EntityId, Vec<Classification>> = BTreeMap::new();
         for diagnosis in &diagnoses {
             let Some(classification) = crate::diagnosis::rules::slurm::classification_for(diagnosis) else {
                 continue;
             };
             for entity in &diagnosis.affected_entities {
-                if let Some(state) = self.engine_mut().state_mut(*entity) {
-                    state.classify(classification);
-                }
+                implied
+                    .entry(*entity)
+                    .or_default()
+                    .push(Classification::new(classification));
+            }
+        }
+
+        let entities: Vec<EntityId> = self.engine().states().map(|s| s.entity).collect();
+        for entity in entities {
+            let classifications = implied.remove(&entity).unwrap_or_default();
+            if let Some(state) = self.engine_mut().state_mut(entity) {
+                state.set_classifications(classifications);
             }
         }
 
