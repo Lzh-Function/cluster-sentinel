@@ -22,6 +22,34 @@
 
 ## v0.3.14
 
+* **一度も通知されなかった incident が、永久に通知されないままになる**（バグ修正）。
+  実クラスタで発見。`sentinel incident list` に open な CRITICAL が出ているのに、
+  webhook には何も届いていない状態が続いていた。
+
+  incident が announce される機会は「それを open した 15 秒のパス」**1 回きり**だった。
+  そこを逃すと二度と来ない:
+  * まだ webhook を設定していなかった
+  * webhook が 500 を返した（コード上は「次のパスで再送する」と書かれていたが、
+    次のパスにその incident はもう乗っていなかった）
+  * そのパスの直後に controller が再起動した
+
+  再起動が効くのは、controller が起動時に open な incident を engine に seed するため。
+  これ自体は正しい（再起動のたびに対応中の障害を再通知しては困る）が、
+  **「もう伝えた」と「まだ一度も伝えられていない」を区別する情報がどこにも無かった。**
+  外から見ればどちらも同じ沈黙で、正しいのは片方だけ。
+
+  * 通知の配信記録を永続化するようにした。`notifications` テーブルは
+    schema には最初からあったが、**一度も書かれていなかった。**
+  * controller 起動時に配信記録から deduplicator を復元する。
+  * 通知の候補を「このパスで変化したもの」から
+    「まだ伝えていないもの」に変えた。open な incident は毎パス候補に上がり、
+    実際に送るかどうかは deduplicator が判断する。
+  * open の通知は incident ごとに 1 回だけ（lease で期限切れしない）。
+    incident が resolve した時点で記録を消すため、
+    同じ障害が後日再発したときはきちんと鳴る。
+  * 配信失敗が本当に次のパスで再送されるようになった。
+    コメントが主張していたことに実装が追いついた。
+
 * **`min_interval` と `format` が生成される config に出ていなかった**。
   v0.3.12 で追加した設定が `sentinel install` / `sentinel config init` の
   出力にも `docs/templates/controller.toml` にも書かれておらず、
