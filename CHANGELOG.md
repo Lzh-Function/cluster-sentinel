@@ -22,6 +22,53 @@
 
 ## v0.3.14
 
+* **NFS の依存関係を、agent が報告するマウント表から自動導出するようにした。**
+  実クラスタで、11 node × 5 fileserver の構成を表現するのに
+  `[[dependencies]]` を 24 個手書きする必要があった。
+  それは cluster が既に知っている事実の 2 つ目の写しであり、
+  **写しがずれても何も言わない。**
+  診断が「fileserver 1 台を名指しする incident 1 件」から
+  「client ごとに 1 件」に静かに劣化し、それが分かるのは
+  それを必要とした障害の最中になる。
+
+  * `nfs.client.mount` の観測から、fileserver の host entity、
+    storage entity、`provides`、`uses_storage` をすべて導出する。
+    マウント構成が変わっても設定ファイルを触る必要がない。
+  * **address から entity を作ることはしない。** マウントが
+    `10.0.0.4:/data` と書かれていて、その address を持つ host を
+    知らない場合は、entity を捏造せず「解決できなかった」と報告する。
+    address は identity ではない（ADR 0001）。
+    `sentinel discover` がどの IP をどの node が使っているかを示す。
+  * 名前で書かれていれば host を作る。`filesrv01:/data` は
+    「filesrv01 という機械が存在して storage を提供している」という証拠で、
+    それはまさに設定ファイルに書かせていた内容そのもの。
+  * **導出された edge は retract もされる。** node が別の fileserver に
+    移れば古い edge は消える。増える一方のグラフは、
+    もはやマウントしていない fileserver の障害に投票し続ける。
+  * 手書きの宣言は併存する（`[discovery.nfs] enabled = false` で完全停止）。
+
+* **refusal しか無い状況を「経路障害」と診断していた**（バグ修正）。
+  実クラスタで誤検知。SSH が 22 以外に移されていたため probe は
+  誰も listen していないポートを叩いていた。2 台の observer は
+  カーネルが RST を返して `refused`（= 到達、RST を返すのは生きている証拠）、
+  1 台は firewall が DROP して timeout。
+  **閉じたポートに対する RST と DROP の差**、つまり firewall の設定差だけで
+  head node への経路障害が CRITICAL で報告され続けていた。
+  * `PATH_SPECIFIC_NETWORK_FAILURE` は、**少なくとも 1 台の observer が
+    実際に接続を完了している**ことを条件にした。
+    誰も接続できていないなら、そこに「壊れた経路」は無い。
+
+* **`sentinel status` が incident を一切表示していなかった**。
+  2 台の host 間の経路障害はどの entity にも属さないため、
+  全 host が HEALTHY、集計行も「31 healthy」と表示される一方で、
+  `sentinel incident list` には open な CRITICAL がある、という状態になる。
+  `status` だけを見ている人には知る術がなかった。
+  * open な incident を entity 一覧の前に表示する。
+  * open な incident があれば exit code も非ゼロになる。
+
+* **`ok / refused` という観測表示が誤解を招いていた**。
+  `refused (so the host answered)` と、何を証明したのかを書くようにした。
+
 * **一度も通知されなかった incident が、永久に通知されないままになる**（バグ修正）。
   実クラスタで発見。`sentinel incident list` に open な CRITICAL が出ているのに、
   webhook には何も届いていない状態が続いていた。

@@ -404,14 +404,27 @@ fn inventory_section() -> String {
     format!(
         "\n\
 # ===========================================================================
-# Slurm の外にある host と storage
+# storage の依存関係（**通常は書く必要がありません**）
 #
-# Slurm discovery では見つからないため、ここで宣言します。
-# agent を入れる予定の host も、先に書いておいて構いません（merge されます）。
+# NFS の依存関係は agent の報告するマウント表から自動で導出されます。
+# fileserver の host entity、storage entity、provides、uses_storage の
+# すべてが、各 node が実際にマウントしているものから作られます。
+# マウント構成を変えても、この設定ファイルを触る必要はありません。
 #
-# 依存関係を書かないと、複数 node の storage 障害が
-# SHARED_STORAGE_FAILURE（原因 = fileserver）ではなく
-# 個別の NFS_CLIENT_FAILURE として報告されます。
+# 導出されたものは `sentinel dependency list` で確認できます。
+# 止めるには [discovery.nfs] enabled = false。
+#
+# 手で書く必要があるのは次の場合だけです:
+#
+#   * マウントが名前ではなく IP で書かれていて、その IP を持つ host を
+#     Sentinel が知らない。address は identity ではない（ADR 0001）ため、
+#     IP から entity を作ることはしません。discover の出力が
+#     「どの IP が解決できなかったか」を報告するので、その host を
+#     下記の [[entities]] で宣言してください。
+#   * NFS 以外の共有ストレージ（Lustre、GPFS、オブジェクトストレージなど）
+#   * どの node もマウントしていないが監視したい fileserver
+#
+# 手で書いた宣言は導出結果と併存します（打ち消されません）。
 # ===========================================================================
 # [[entities]]
 # type = \"host\"
