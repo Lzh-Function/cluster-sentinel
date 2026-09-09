@@ -20,6 +20,20 @@
 * Ansible ロール（`deploy/ansible/`）
 * release workflow（x86_64 / aarch64 の静的リンクバイナリ）
 
+## v0.3.14
+
+* **`min_interval` と `format` が生成される config に出ていなかった**。
+  v0.3.12 で追加した設定が `sentinel install` / `sentinel config init` の
+  出力にも `docs/templates/controller.toml` にも書かれておらず、
+  **新規に導入した人はその存在を知る手段がなかった**。
+  webhook への送信間隔を制限したいという状況は、たいてい
+  制限が要ると気づいた後ではなく先に来るので、既定値が見えている必要がある。
+  * 通知セクションを手書きの固定文字列から、
+    `Config::default()` から描画する形に変更。以後は既定値と一緒に動く。
+  * コメントを外した通知ブロックが実際に parse され、
+    書かれている値がコンパイル時の既定値と一致することをテストで固定した。
+  * 併せて宛先ごとの `format`（`"generic"` / `"slack"`）も記載。
+
 ## v0.3.13
 
 * **`sentinel explain`**（新規）。この仕組みを**作っていない人**が読むためのもの。

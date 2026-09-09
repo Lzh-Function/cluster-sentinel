@@ -36,10 +36,17 @@ enabled = true
 # 導入初期は "critical" から始めるのも有効です。
 min_severity = "warning"
 
+# 同一宛先への送信間隔の下限。間引きではなく間隔をあけるため、
+# 一度に多数の incident が開いても通知は捨てられず、順に遅れて届きます。
+# 既定値は Slack の incoming webhook の公称上限に合わせてあります。
+min_interval = "1s"
+
 # 宛先。複数指定でき、重複排除は宛先ごとに行われます。
+# format は "generic"（汎用 JSON）か "slack"（Block Kit; 色・太字つき）。
 # [[notification.webhooks]]
-# name = "ntfy"
-# url  = "https://ntfy.example.org/CHANGE-ME"
+# name   = "ntfy"
+# url    = "https://ntfy.example.org/CHANGE-ME"
+# format = "generic"
 
 
 # ===========================================================================
