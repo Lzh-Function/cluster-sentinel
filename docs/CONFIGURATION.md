@@ -398,6 +398,25 @@ host の死を区別できなくなるためです。
 Slurm は複数ある inventory provider のうちの 1 つです。
 Slurm 外の host も一級市民として扱われます。
 
+### `[discovery.nfs]`
+
+| キー | 型 | 既定値 | 意味 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | NFS の依存関係を agent の報告から導出するか |
+
+**既定で有効です。** agent が報告するマウント表から、fileserver の
+host entity、storage entity、`provides`、`uses_storage` が自動で作られます。
+`[[dependencies]]` に NFS のマウント関係を書く必要はありません。
+
+導出された内容は `sentinel dependency list` で確認できます。
+
+address でマウントされていて、その address を持つ host が未知の場合、
+entity を捏造せずに `sentinel discover` が報告します
+（address は identity ではないため。[ADR 0001](adr/0001-deterministic-entity-identity.md)）。
+
+手で書いた宣言は導出結果と併存します。打ち消し合いません。
+詳細と例外は [DEPLOYMENT.md §9.9](DEPLOYMENT.md#99-ストレージ構成は書かなくてよい例外は-3-つ)。
+
 ### `[capabilities]`
 
 Capability 名をキーとする運用者による上書き。
@@ -454,6 +473,10 @@ SSH を 22 以外で運用しているクラスタでこれを書き忘れると
 probe が閉じたポートを叩き、**全 host が SSH 障害として報告されます。**
 
 ### `[[dependencies]]`
+
+> **NFS については書く必要がありません。** マウント関係は agent の報告から
+> 自動で導出されます（`[discovery.nfs]`）。ここに書くのは、NFS 以外の
+> 共有ストレージや、導出できなかったものだけです。
 
 `from` が `to` に依存します。両者とも `type/name` 形式で記述します。
 
