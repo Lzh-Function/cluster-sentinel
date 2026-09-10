@@ -37,6 +37,7 @@ BMC のような別系統の証拠なしに、Sentinel はこれを主張しま�
 | 目的 | ドキュメント |
 | --- | --- |
 | **はじめて触る** | [GETTING_STARTED.md](docs/GETTING_STARTED.md) |
+| **コマンドの一覧と使い分け** | [COMMANDS.md](docs/COMMANDS.md) |
 | 本番クラスタへ本格導入する | [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | 日々の運用、障害時の読み方、アップグレード | [OPERATIONS.md](docs/OPERATIONS.md) |
 | 設定項目のリファレンス | [CONFIGURATION.md](docs/CONFIGURATION.md) |
@@ -73,18 +74,14 @@ cargo build --release
 controller も agent も CLI も、すべて同じバイナリのサブコマンドです。
 
 ```bash
-sentinel install controller       # 設定・unit・credential を生成する
 sentinel status                   # 今どうなっているか
 sentinel diagnose                 # 何が壊れていて、なぜそう言えるのか
 sentinel explain                  # 何をどうやって見張っているのか
-sentinel entity show <name>       # 1 つの entity の詳細
 sentinel entity observations <n>  # その判断の元になった生の観測
-sentinel incident list            # 障害として扱われているもの
-sentinel dependency list          # 依存関係のグラフ
-sentinel peers                    # 誰が誰を見張っているか
-sentinel doctor                   # このホストが Sentinel からどう見えるか
 sentinel notify test              # 通知先に実際に届くか
 ```
+
+**一覧と使い分けは [docs/COMMANDS.md](docs/COMMANDS.md)** にまとめてあります。
 
 いずれも `--json` で機械可読出力になります。
 `sentinel status` は異常があれば exit code 2 を返すので、

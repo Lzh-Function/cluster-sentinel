@@ -305,6 +305,7 @@ sudo -u sentinel sentinel notify test
 
 | 目的 | ドキュメント |
 | --- | --- |
+| **コマンドの一覧と使い分け** | [COMMANDS.md](COMMANDS.md) |
 | 本番クラスタへ本格導入する（TLS、非標準ポート、段階導入） | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | 日々の運用と、障害が出たときの読み方 | [OPERATIONS.md](OPERATIONS.md) |
 | 設定項目を全部知りたい | [CONFIGURATION.md](CONFIGURATION.md) |
