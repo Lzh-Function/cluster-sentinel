@@ -222,6 +222,15 @@ override は controller の remote probe と agent の peer probe にも同じ�
 | `min_severity` | 文字列 | `warning` | これ未満は送らない（復旧通知は常に送る） |
 | `min_interval` | duration | `1s` | **同一宛先への送信間隔の下限** |
 
+**何が送られ、何が送られないか。** severity は診断の種類だけでなく
+**それに依存しているものの数**でも決まります。設定の不一致や clock skew は
+`info` のままなので既定では送られませんが、**node を drain した場合は
+`warning` になり送られます** — 計算ノードには必ず `slurmd` サービスが
+ぶら下がっており、影響範囲が 0 にならないためです。
+
+drain を静かに済ませたい場合は `min_severity = "critical"` にしてください。
+逆に、些細な変化も拾いたい場合は既定のままで十分です。
+
 `min_interval` は**送信を間引くのではなく、間隔を空けます。**
 1 つの障害が依存先を巻き込むと 1 回の診断で複数の通知が発生し、
 webhook は共有された rate-limited な資源です
