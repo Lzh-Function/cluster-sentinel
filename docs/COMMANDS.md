@@ -15,7 +15,8 @@
 | 何が壊れていて、なぜそう言えるのか | `sentinel diagnose` |
 | 対応が必要な障害の一覧 | `sentinel incident list` |
 | その障害の根拠と経緯を全部見る | `sentinel incident show <id>` |
-| **そもそもちゃんと監視できているのか** | `sentinel explain paths` |
+| **動いているはずの検査が動いているか** | `sentinel audit` |
+| そもそもちゃんと監視できているのか | `sentinel explain paths` |
 | 何をどんなコマンドで見張っているのか | `sentinel explain` |
 | ある host の詳細を見る | `sentinel entity show <name>` |
 | **その判断の元になった生データ** | `sentinel entity observations <name>` |
@@ -70,6 +71,7 @@ credential を含みうるためです。
 | `discover` | 全 provider 成功 | 失敗した provider あり | — |
 | `notify test` | 全宛先に到達 | — | 失敗した宛先あり |
 | `entity show` / `observations` | 成功 | 見つからない／曖昧 | — |
+| `audit` | 沈黙している probe なし | — | 沈黙している probe あり |
 
 ---
 
@@ -152,6 +154,54 @@ compute02
 
 **`watched by` が空か 1 台しかない host は、実質的に監視されていません。**
 到達性の判断には独立した視点が最低 2 つ必要で、1 台では判断を保留します。
+
+### `sentinel audit`
+
+**動いているはずの検査が、実際に動いているか。**
+
+```bash
+sentinel audit
+```
+
+`explain probes` は「何が動く**はず**か」を、`entity observations` は
+「何が動い**た**か」を言います。**この 2 つを突き合わせるものが無かったため、
+ある検査がどこからも実行されていないことに数か月気づけませんでした。**
+
+検査が走らなければ観測が生まれず、観測が無ければ失敗もせず、失敗しなければ
+診断もされません。**何も言われないので、すべて健全に見えます。**
+沈黙している probe は、それ自体が異常です。
+
+報告は 2 種類に分かれます。
+
+| 種別 | 意味 |
+| --- | --- |
+| **never** | 一度も観測が無い。**どこからも実行されていない**可能性が高い |
+| （時刻あり） | 以前は動いていたが止まった。agent の停止、capability の消失など |
+
+probe ごとにまとめて表示されるので、**「適用される全ホストで沈黙」**が
+一目で分かります。1 台だけ静かなのはそのホストの問題ですが、
+**全ホストで静かなのは配線されていない probe** で、
+これは他のどこにも現れません。
+
+誤検知を避けるため、次は報告しません。
+
+- 設定で明示的に無効化されている probe
+- agent が居ないホストのローカル probe（実行する主体がいない）
+- observer が付いていないホストのリモート probe（同上。`explain paths` の領分）
+- 直近で 1 回取りこぼしただけのもの（**probe 間隔の 10 倍**、最低 5 分は待つ）
+
+**沈黙があれば exit code 2** を返すので、cron や CI に置けます。
+
+```bash
+sudo -u sentinel sentinel audit > /dev/null || echo "監視に穴があります"
+```
+
+`status` の末尾にも 1 行だけ出ます。**この検査自体を実行し忘れると同じことに
+なる**ので、聞かれなくても言うようにしてあります。
+
+```
+⚠ 1 probe(s) have never reported at all; run `sentinel audit` for which
+```
 
 ### `sentinel entity list`
 

@@ -161,6 +161,25 @@ sentinel entity observations <host> --probe nfs.server.exports
 capability が付いていない可能性が高いので、`sentinel entity show <host>` の
 Capabilities を確認してください。
 
+### 定期的に `sentinel audit` を回す
+
+上の 2 つは手で確認する手順ですが、**確認し忘れれば同じことです。**
+`sentinel audit` は「有効なのに観測を出していない probe」を挙げ、
+あれば exit code 2 を返します。cron に置いてください。
+
+```bash
+sudo -u sentinel sentinel audit > /dev/null || echo "cluster-sentinel: 監視に穴があります"
+```
+
+沈黙している probe があると `status` の末尾にも 1 行出ます。
+
+```
+⚠ 1 probe(s) have never reported at all; run `sentinel audit` for which
+```
+
+**構成を変えた直後は必ず見てください。** capability の判定が変わって
+probe が静かになるのは、変更した本人にも見えない形で起きます。
+
 ### 名前が重複する場合
 
 storage entity は提供元ホストと**同じ名前**を名乗ります

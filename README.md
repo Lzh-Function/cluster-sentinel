@@ -77,6 +77,7 @@ controller も agent も CLI も、すべて同じバイナリのサブコマン
 sentinel status                   # 今どうなっているか
 sentinel diagnose                 # 何が壊れていて、なぜそう言えるのか
 sentinel explain                  # 何をどうやって見張っているのか
+sentinel audit                    # 動いているはずの検査が動いているか
 sentinel entity observations <n>  # その判断の元になった生の観測
 sentinel notify test              # 通知先に実際に届くか
 ```
