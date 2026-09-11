@@ -133,6 +133,34 @@ expect_diagnosis SLURM_ONLY_DEGRADATION
 expect_no_diagnosis SLURMD_SERVICE_FAILURE
 recover && expect_clean
 
+# --- the head node, which serves nothing -----------------------------------
+# The controller's host has the export service answering on 2049 with an empty
+# export list, and an agent beside the controller. That is the ordinary shape
+# of a head node, and it produced a false critical on a real cluster twice:
+# once because an empty export list was treated as a fault on its own, and once
+# because "does anyone use what this host serves" was asked of the dependency
+# graph transitively, which walks the scheduler loop back round to every host.
+step "Head node serves nothing, and is not accused of failing at it"
+if ./scripts/sentinel diagnose 2>/dev/null | grep -q "controller is up but"; then
+    fail "the head node was diagnosed for exporting nothing"
+else
+    pass "a host nobody mounts from is not a failing fileserver"
+fi
+if ./scripts/sentinel entity observations host/controller --probe nfs.server.port 2>/dev/null | grep -q "connected"; then
+    pass "and its export port really is answering, so the case is live"
+else
+    fail "the head node's export port is not being probed; this check proves nothing"
+fi
+
+# --- the monitoring has no holes -------------------------------------------
+step "Every probe that applies is reporting"
+if ./scripts/sentinel audit > /dev/null 2>&1; then
+    pass "sentinel audit is clean"
+else
+    fail "sentinel audit found probes that should be reporting and are not"
+    ./scripts/sentinel audit 2>&1 | sed 's/^/      /'
+fi
+
 # --- 12-13: path-specific network failure ----------------------------------
 step "12-13. controller isolated from compute01 only"
 ./scenarios/isolate controller compute01 >/dev/null 2>&1

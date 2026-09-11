@@ -20,6 +20,50 @@
 * Ansible ロール（`deploy/ansible/`）
 * release workflow（x86_64 / aarch64 の静的リンクバイナリ）
 
+## v1.0.3
+
+擬似クラスタを実クラスタの形に寄せ、それが即座に炙り出した 2 件を修正。
+
+* **擬似クラスタに、実機では当たり前の 3 つの形を入れた。**
+  単純な構成では見つからない欠陥が 3 回続けて実機でだけ出たため。
+
+  | 形 | なぜ必要か |
+  | --- | --- |
+  | controller host が **agent も動かす** | controller は自分自身に probe を打たないので、この形でしか出ない穴がある |
+  | **計算ノードの 1 台がストレージも提供する** | 依存グラフに閉路ができ、推移的に辿るルールが破綻する |
+  | head node が **export ゼロで export port に応答** | 誤検知の常連 |
+
+  ルールを v1.0.1 の実装に戻すと、擬似クラスタが実機とまったく同じ文言で
+  同じ誤検知を出すことを確認しました。**これまでは出ませんでした。**
+
+* **storage のルール 2 つが、同じ推移性の誤りを持っていた**（バグ修正）。
+  閉路を入れた途端に現れました。
+
+  ```
+  compute03's access to storage02, compute03-scratch, compute02-scratch,
+  storage01 is impaired
+  ```
+
+  この node が宣言している `uses_storage` は **1 本だけ**です。
+  残りは scheduler 経由で推移的に辿って拾っていました。
+
+  * `NFS_CLIENT_FAILURE`（どの storage を使っているか、誰が隣人か）と
+    `SHARED_STORAGE_FAILURE`（どの storage を共有しているか）の両方を、
+    **直接の `uses_storage` edge** で答えるよう変更。
+  * 閉路のあるグラフで両ルールを検証するテストを追加。
+  * 到達可能性でグループ化する `group_by_shared_upstream` は、
+    これで本番コードから使われなくなりました。
+
+* **readiness がコンテナの実際の構成を見ていなかった。**
+  storage service を足したコンテナの healthcheck が slurmd と API しか
+  見ておらず、起動直後の最初の診断が「数秒で消える storage 障害」を
+  報告していました。healthcheck が実際に動かすものを見るようにしました。
+
+* 受け入れ項目を 23 → 26 に。追加したのは「誰もマウントしていない head node が
+  fileserver 障害として報告されないこと」「その export port が実際に応答して
+  いること（検査が空振りしていないことの確認）」「`sentinel audit` がクリーン
+  であること」の 3 つです。
+
 ## v1.0.2
 
 * **v1.0.1 の修正が効いていなかった**（バグ修正）。
