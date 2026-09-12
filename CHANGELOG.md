@@ -20,6 +20,75 @@
 * Ansible ロール（`deploy/ansible/`）
 * release workflow（x86_64 / aarch64 の静的リンクバイナリ）
 
+## v1.0.4
+
+計画作業中に通知が止まるようになった。**これまで止められなかった。**
+
+* **`sentinel maintenance` を追加。** ディスク換装や電源工事のように
+  「わざと落とす」作業の前に宣言しておけば、その間の通知が止まります。
+
+  ```bash
+  sentinel maintenance start filesrv01 --reason "HDD 換装" --for 6h
+  sentinel maintenance list
+  sentinel maintenance end <id>
+  ```
+
+  抑止されるのは**通知だけ**です。probe は動き続け、state も diagnosis も
+  更新され続けるので、作業中に別の本物の障害が始まっていれば、
+  いつ始まったのかを後から追えます。
+
+  incident が抑止されるのは、**影響を受けている entity がすべて**
+  maintenance 対象である場合のみです。1 台の作業が、
+  4 台を巻き込む障害を隠すことはありません。
+
+* **なぜ今まで無かったのか。** 機能そのものは最初から全部ありました。
+  `MaintenanceWindow` 型、その判定規則、それ専用のテスト、
+  最初の migration にある `maintenance_windows` テーブル、
+  そして notification 経路が毎回参照する `MaintenanceWindows` 引数。
+  **ただし、その引数を production が毎回空で作っていた**ため、
+  抑止の分岐は実機で一度も通らず、window を書き込む手段も存在しませんでした。
+
+  `nfs.server.exports` が一度も走っていなかったのと同じ形の欠陥です
+  — **定義されているが到達できない**。
+  今回はそれを、書き込み（store）・読み出し（診断ループ）・
+  操作（CLI）の 3 つを繋いで塞いでいます。
+  診断ループが window を読むことそれ自体にテストを置いたので、
+  再び空に戻せばテストが落ちます。
+
+* **`sentinel status` が抑止中であることを表示。**
+  これが無いと、「open な CRITICAL があるのに Slack に何も来ない」状況が、
+  webhook が壊れている場合と、誰かが maintenance を宣言して忘れた場合の
+  両方で同じに見えます。
+
+  ```
+  ⚠ notifications suppressed by maintenance: filesrv01
+    probing and diagnosis continue; end it with: sentinel maintenance end <id>
+  ```
+
+* **`sentinel audit` が、期限なしで 24 時間以上放置された window を報告。**
+  解除を忘れた window は「動かない probe」と同じ種類の欠陥
+  — 監視は正常なのに出力がどこにも行かない — なので、
+  cron で回る側で拾えるようにしました。exit code も 2 を返します。
+  `--for` で期限を付けた window は自分で閉じるので、
+  どれだけ古くても報告されません。
+
+* 疑似クラスタの受け入れ項目に、窓を宣言した状態で故障を起こし、
+  **incident が変わらず open になり `incident list` に出ること**を
+  確認する検査を追加（受け入れ項目 31 → 33 件）
+
+* **受け入れスクリプトの、常に PASS を返す検査を修正。**
+  `sentinel status` と `sentinel incident list` は報告すべきものがあるとき
+  exit 2 を返し、スクリプトは `pipefail` で動いているため、
+
+  ```bash
+  if ./scripts/sentinel status | grep -q "x"; then
+  ```
+
+  は x があっても失敗します。逆向きの
+  `if ... | grep -q BAD; then fail; else pass; fi` の形は
+  **常に PASS を返していました**。既存の 2 件がその形だったため、
+  出力を先に捕まえてから照合する形に統一しました。
+
 ## v1.0.3
 
 擬似クラスタを実クラスタの形に寄せ、それが即座に炙り出した 2 件を修正。
