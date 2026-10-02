@@ -24,7 +24,7 @@ pub use provider::{NotificationProvider, ProviderError, WebhookProvider};
 use serde::{Deserialize, Serialize};
 
 use crate::incident::{Incident, IncidentUpdate, Severity};
-use crate::time::{now, Timestamp};
+use crate::time::Timestamp;
 
 /// Why a notification is being sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -79,6 +79,9 @@ pub struct Notification {
     pub recommended_actions: Vec<String>,
     /// When this was produced.
     pub created_at: Timestamp,
+    /// Stable lifecycle event identity, so retries cannot become new news.
+    #[serde(default)]
+    pub event_id: Option<String>,
 }
 
 impl Notification {
@@ -87,7 +90,16 @@ impl Notification {
     /// Scoped to the incident *and the trigger*, so a resolution is still
     /// delivered after the opening was: they are different news.
     pub fn deduplication_key(&self) -> String {
-        format!("{}:{}", self.fingerprint, self.trigger.as_str())
+        match &self.event_id {
+            Some(event) => format!(
+                "{}:event:{}:{}:{}",
+                self.fingerprint,
+                self.incident_id,
+                event,
+                self.trigger.as_str()
+            ),
+            None => format!("{}:{}", self.fingerprint, self.trigger.as_str()),
+        }
     }
 
     /// Build a notification for an incident.
@@ -138,7 +150,10 @@ impl Notification {
                 .iter()
                 .flat_map(|d| d.recommended_actions.clone())
                 .collect(),
-            created_at: now(),
+            created_at: event_for(incident, trigger)
+                .map(|e| e.at)
+                .unwrap_or(incident.started_at),
+            event_id: Some(event_identity(incident, trigger)),
         }
     }
 }
@@ -165,50 +180,79 @@ fn summary_of(incident: &Incident) -> String {
 /// monitoring system that has noticed a fault and says nothing is worse than
 /// one that never noticed.
 pub fn notifications_for(update: &IncidentUpdate) -> Vec<Notification> {
-    let mut notifications = Vec::new();
-
-    for incident in &update.opened {
-        notifications.push(Notification::for_incident(incident, Trigger::Opened));
-    }
-    for incident in &update.recovering {
-        notifications.push(Notification::for_incident(incident, Trigger::Recovering));
-    }
-    for incident in &update.resolved {
-        notifications.push(Notification::for_incident(incident, Trigger::Resolved));
-    }
-
-    for incident in &update.updated {
-        // Still open, so still a candidate for its opening announcement. The
-        // deduplicator suppresses this on every pass after the one that
-        // delivered it, and an opening is one-shot for the life of the
-        // incident, so a long-running fault is announced exactly once.
-        if incident.status.is_active() {
-            notifications.push(Notification::for_incident(incident, Trigger::Opened));
-        }
-        // Something about it changed as well. The timeline is the record.
-        if let Some(trigger) = trigger_for_update(incident) {
-            notifications.push(Notification::for_incident(incident, trigger));
+    let mut by_key = std::collections::BTreeMap::new();
+    for incident in update.all() {
+        for notification in notifications_for_incident(incident) {
+            by_key.insert(notification.deduplication_key(), notification);
         }
     }
-
+    let mut notifications: Vec<_> = by_key.into_values().collect();
+    notifications.sort_by_key(|n| (n.created_at, n.trigger));
     notifications
 }
 
-/// Whether an updated incident changed in a way worth reporting.
-fn trigger_for_update(incident: &Incident) -> Option<Trigger> {
-    // Only events from this reconciliation matter, and those are the ones at
-    // the end of the timeline.
-    let recent = incident.timeline.iter().rev().take(4);
+fn event_for(incident: &Incident, trigger: Trigger) -> Option<&crate::incident::TimelineEvent> {
+    let kinds: &[&str] = match trigger {
+        Trigger::Opened => &["opened", "reopened", "recovery_failed"],
+        Trigger::Escalated => &["severity_escalated"],
+        Trigger::DiagnosisChanged => &["diagnosis_changed"],
+        Trigger::Recovering => &["recovering"],
+        Trigger::Resolved => &["resolved"],
+    };
+    incident
+        .timeline
+        .iter()
+        .rev()
+        .find(|e| kinds.contains(&e.kind.as_str()))
+}
 
-    for event in recent {
-        match event.kind.as_str() {
-            "severity_escalated" => return Some(Trigger::Escalated),
-            "diagnosis_changed" => return Some(Trigger::DiagnosisChanged),
-            "reopened" => return Some(Trigger::Opened),
-            _ => {}
+fn event_identity(incident: &Incident, trigger: Trigger) -> String {
+    let event = event_for(incident, trigger);
+    let text = event
+        .map(|e| format!("{}:{}:{}", crate::time::to_rfc3339(e.at), e.kind, e.detail))
+        .unwrap_or_else(|| crate::time::to_rfc3339(incident.started_at));
+    uuid::Uuid::new_v5(&incident.id, text.as_bytes()).to_string()
+}
+
+/// Current lifecycle candidates. Stored atomically with the incident, then
+/// offered until each provider records delivery. Later lifecycle states replace
+/// obsolete messages, so a recovery cannot arrive after a returning outage.
+pub fn notifications_for_incident(incident: &Incident) -> Vec<Notification> {
+    use crate::incident::IncidentStatus;
+    let mut notifications = Vec::new();
+    let mut push = |trigger| {
+        let mut n = Notification::for_incident(incident, trigger);
+        n.created_at = event_for(incident, trigger)
+            .map(|e| e.at)
+            .unwrap_or(incident.started_at);
+        notifications.push(n);
+    };
+    match incident.status {
+        IncidentStatus::Resolved => push(Trigger::Resolved),
+        IncidentStatus::Recovering => push(Trigger::Recovering),
+        IncidentStatus::Suppressed => {}
+        IncidentStatus::Open | IncidentStatus::Acknowledged => {
+            push(Trigger::Opened);
+            let lifecycle = incident
+                .timeline
+                .iter()
+                .rposition(|e| matches!(e.kind.as_str(), "opened" | "reopened" | "recovery_failed"));
+            for (kind, trigger) in [
+                ("severity_escalated", Trigger::Escalated),
+                ("diagnosis_changed", Trigger::DiagnosisChanged),
+            ] {
+                if incident
+                    .timeline
+                    .iter()
+                    .enumerate()
+                    .any(|(index, event)| event.kind == kind && lifecycle.is_none_or(|start| index >= start))
+                {
+                    push(trigger);
+                }
+            }
         }
     }
-    None
+    notifications
 }
 
 #[cfg(test)]
@@ -291,7 +335,9 @@ mod tests {
             updated: vec![resolved],
             ..Default::default()
         };
-        assert!(notifications_for(&update).is_empty());
+        assert!(notifications_for(&update)
+            .iter()
+            .all(|n| n.trigger == Trigger::Resolved));
     }
 
     #[test]

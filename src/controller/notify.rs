@@ -67,10 +67,40 @@ pub fn min_severity(config: &crate::config::Config) -> Severity {
     Severity::parse(&config.notification.min_severity).unwrap_or(Severity::Warning)
 }
 
+/// Notification work owns only a configuration snapshot and the store. Slow
+/// providers and rate limiting must not hold the observation/diagnosis lock.
+pub(super) struct NotificationDispatcher {
+    pub config: crate::config::Config,
+    pub store: crate::persistence::SqliteStore,
+}
+
 impl Controller {
-    /// Send notifications for what a reconciliation changed.
     pub async fn notify(
         &mut self,
+        update: &IncidentUpdate,
+        providers: &[Arc<dyn NotificationProvider>],
+        deduplicator: &mut Deduplicator,
+        maintenance: &MaintenanceWindows,
+    ) -> Result<NotifyOutcome, StoreError> {
+        NotificationDispatcher {
+            config: self.config().clone(),
+            store: self.store().clone(),
+        }
+        .notify(update, providers, deduplicator, maintenance)
+        .await
+    }
+}
+
+impl NotificationDispatcher {
+    fn config(&self) -> &crate::config::Config {
+        &self.config
+    }
+    fn store(&self) -> &crate::persistence::SqliteStore {
+        &self.store
+    }
+    /// Send notifications for what a reconciliation changed.
+    pub async fn notify(
+        &self,
         update: &IncidentUpdate,
         providers: &[Arc<dyn NotificationProvider>],
         deduplicator: &mut Deduplicator,
@@ -83,16 +113,19 @@ impl Controller {
 
         let floor = min_severity(self.config());
         let spacing = self.config().notification.min_interval;
-        let notifications = notifications_for(update);
-        let mut last_send: Option<std::time::Instant> = None;
-
-        // A resolved incident's opening is no longer the last word on it. Drop
-        // the record so the same fault returning next week is announced rather
-        // than mistaken for the one already reported.
-        for incident in &update.resolved {
-            for key in deduplicator.forget_opening(&incident.fingerprint) {
-                if let Err(error) = self.store().forget_notifications(&key).await {
-                    tracing::warn!(%error, "cannot clear a delivery record for a resolved incident");
+        let mut notifications = self.store().notification_candidates(&self.config().environment).await?;
+        let offered = notifications_for(update);
+        // Direct callers can offer unpersisted updates too. Replace candidates
+        // for those incidents so tests and CLI callers get the same lifecycle.
+        let ids: Vec<_> = update.all().iter().map(|i| i.id.to_string()).collect();
+        notifications.retain(|n| !ids.contains(&n.incident_id));
+        notifications.extend(offered);
+        notifications.sort_by_key(|n| (n.created_at, n.trigger));
+        let mut effective = update.clone();
+        for n in &notifications {
+            if !effective.all().iter().any(|i| i.id.to_string() == n.incident_id) {
+                if let Some(i) = self.store().load_incident(&n.incident_id).await? {
+                    effective.updated.push(i);
                 }
             }
         }
@@ -105,7 +138,7 @@ impl Controller {
                 continue;
             }
 
-            if self.is_under_maintenance(notification, update, maintenance) {
+            if self.is_under_maintenance(notification, &effective, maintenance) {
                 outcome.suppressed_by_maintenance += 1;
                 continue;
             }
@@ -120,13 +153,33 @@ impl Controller {
                 // notifications at once, and a webhook is a shared,
                 // rate-limited resource: sending them as fast as they are
                 // produced is how the one that mattered gets a 429.
-                if let Some(previous) = last_send {
+                if let Some(previous) = deduplicator.last_attempt {
                     let elapsed = previous.elapsed();
                     if elapsed < spacing {
                         tokio::time::sleep(spacing - elapsed).await;
                     }
                 }
-                last_send = Some(std::time::Instant::now());
+                // Recheck after waiting: diagnosis may have resolved/reopened
+                // this incident while another provider was slow.
+                if !ids.contains(&notification.incident_id)
+                    && !self.store().is_notification_current(notification).await?
+                {
+                    continue;
+                }
+                if ids.is_empty() {
+                    // A maintenance window may start during rate limiting.
+                    match self.store().load_maintenance_windows(&self.config().environment).await {
+                        Ok(windows) => {
+                            let current = MaintenanceWindows::from_windows(windows);
+                            if self.is_under_maintenance(notification, &effective, &current) {
+                                outcome.suppressed_by_maintenance += 1;
+                                continue;
+                            }
+                        }
+                        Err(error) => tracing::warn!(%error, "cannot refresh maintenance windows"),
+                    }
+                }
+                deduplicator.last_attempt = Some(std::time::Instant::now());
 
                 match provider.send(notification).await {
                     Ok(()) => {

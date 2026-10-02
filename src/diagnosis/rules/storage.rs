@@ -148,7 +148,7 @@ impl DiagnosisRule for StorageServiceFailure {
         for host in context.entities_of_type(EntityType::Host) {
             let port = context.observation(host.id, PROBE_SERVER_PORT);
             let port_failed = port.is_some_and(|o| o.status.is_bad());
-            let port_answers = port.is_some_and(|o| !o.status.is_bad());
+            let port_answers = port.is_some_and(|o| o.status == crate::observation::ProbeStatus::Ok);
 
             // Exports being empty is a fact the probe records. Whether it is a
             // fault depends on this: **is anything listening on 2049?**

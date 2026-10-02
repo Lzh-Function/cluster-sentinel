@@ -13,6 +13,55 @@ use crate::time::{now, to_rfc3339};
 /// its own database (SPEC.md §40, §127).
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+pub(crate) fn sqlite_busy(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if db.code().is_some_and(|code| code.parse::<i32>().is_ok_and(|code| code & 0xff == 5 || code & 0xff == 6)))
+}
+
+/// WAL persists in the file. Initialize it once, with bounded retries for a
+/// previous process/pool's closing connection, rather than switching journal
+/// mode on every new connection (which needs an exclusive SQLite lock).
+pub(crate) async fn open_sqlite_pool(path: &Path, connections: u32) -> Result<SqlitePool, StoreError> {
+    let options = SqliteConnectOptions::from_str(&sqlite_url(path))?
+        .create_if_missing(true)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .busy_timeout(std::time::Duration::from_secs(10));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let pool = loop {
+        match SqlitePoolOptions::new()
+            .max_connections(connections)
+            .connect_with(options.clone())
+            .await
+        {
+            Ok(pool) => break pool,
+            Err(error) if sqlite_busy(&error) && std::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    if path != Path::new(":memory:") {
+        loop {
+            let result = async {
+                let mode: String = sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&pool).await?;
+                if !mode.eq_ignore_ascii_case("wal") {
+                    sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await?;
+                }
+                Ok::<_, sqlx::Error>(())
+            }
+            .await;
+            match result {
+                Ok(()) => break,
+                Err(error) if sqlite_busy(&error) && std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(pool)
+}
+
 /// A SQLite connection pool with the schema applied.
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -33,19 +82,7 @@ impl SqliteStore {
             }
         }
 
-        let options = SqliteConnectOptions::from_str(&sqlite_url(path))?
-            .create_if_missing(true)
-            // WAL keeps readers (the CLI) from blocking the controller's
-            // writers (SPEC.md §124).
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-            .foreign_keys(true)
-            .busy_timeout(std::time::Duration::from_secs(10));
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(8)
-            .connect_with(options)
-            .await?;
+        let pool = open_sqlite_pool(path, 8).await?;
         let store = Self { pool };
         store.migrate().await?;
         Ok(store)
@@ -67,8 +104,19 @@ impl SqliteStore {
 
     /// Apply any outstanding migrations.
     pub async fn migrate(&self) -> Result<(), StoreError> {
-        MIGRATOR.run(&self.pool).await?;
-        Ok(())
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match MIGRATOR.run(&self.pool).await {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if matches!(&error, sqlx::migrate::MigrateError::Execute(e) | sqlx::migrate::MigrateError::ExecuteMigration(e, _) if sqlite_busy(e))
+                        && std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     /// The connection pool, for repositories in other modules.

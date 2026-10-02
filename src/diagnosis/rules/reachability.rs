@@ -88,7 +88,7 @@ pub fn verdicts_by_target(context: &DiagnosisContext) -> BTreeMap<EntityId, Verd
         let mut verdicts = Verdicts::default();
 
         for observation in context.observations.for_entity(host.id) {
-            if observation.probe_id.as_str() != NETWORK_PROBE {
+            if observation.probe_id.as_str() != NETWORK_PROBE || !observation.status.is_conclusive() {
                 continue;
             }
             let Some(observer) = observation.observer_entity else {
@@ -348,6 +348,17 @@ mod tests {
             };
             rule.evaluate(&context)
         }
+    }
+
+    #[test]
+    fn unsupported_observers_are_neither_reached_nor_failed_votes() {
+        let mut world = World::new(&["target", "a", "b"]).saw("a", "target", false);
+        world.observations.insert(
+            Observation::new(ProbeId::new(NETWORK_PROBE), host("target"), ProbeStatus::Unsupported)
+                .with_observer(host("b")),
+        );
+        assert!(world.evaluate(&HostUnreachable).is_empty());
+        assert!(world.evaluate(&PathSpecificNetworkFailure).is_empty());
     }
 
     #[test]

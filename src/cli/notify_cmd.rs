@@ -28,6 +28,7 @@ use super::Cli;
 /// who does see it must know within a second that nothing is wrong.
 fn test_notification(severity: Severity) -> Notification {
     Notification {
+        event_id: None,
         incident_id: "00000000-0000-0000-0000-000000000000".to_string(),
         fingerprint: "sentinel-test-notification".to_string(),
         trigger: Trigger::Opened,

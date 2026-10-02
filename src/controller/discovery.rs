@@ -181,24 +181,16 @@ impl Controller {
             self.reconcile_snapshot_capabilities(snapshot).await?;
         }
 
-        // Observations must be stored before the state they justify, so that a
-        // crash between the two leaves evidence without conclusions rather than
-        // conclusions without evidence.
-        let ingested = self.store().ingest_observations(&observations).await?;
-        report.observations = ingested.inserted;
-
-        // Refreshed here because the graph has just been merged: a storage
-        // domain discovered this cycle should be answered by this cycle's
-        // observations, not the next one's.
         self.storage_providers = super::storage_providers(&inventory);
-
-        report.transitions = self.ingest_into_engine(&observations);
-        for transition in &report.transitions {
-            self.store().save_state_transition(transition).await?;
-        }
-        for state in self.engine.states() {
-            self.store().save_entity_state(state).await?;
-        }
+        let views = self.storage_views(&observations);
+        let mut candidate = self.engine.clone();
+        let (ingested, transitions) = self
+            .store()
+            .apply_observations(&self.config().environment, &observations, &views, &mut candidate)
+            .await?;
+        self.engine = candidate;
+        report.observations = ingested.inserted;
+        report.transitions = transitions;
 
         // Diagnosis runs here so a caller of `discover_once` -- the CLI's
         // `sentinel discover` -- can show what the new picture implies.
@@ -285,6 +277,7 @@ impl Controller {
         inventory.merge(snapshot);
         self.store().save_inventory(&inventory).await?;
         self.reconcile_snapshot_capabilities(snapshot).await?;
+        self.storage_providers = super::storage_providers(&inventory);
         Ok(inventory)
     }
 
@@ -339,7 +332,11 @@ impl Controller {
         ];
 
         let mut views = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for observation in observations {
+            if !seen.insert(observation.id) {
+                continue;
+            }
             if !SERVER_PROBES.contains(&observation.probe_id.as_str()) {
                 continue;
             }
@@ -355,33 +352,26 @@ impl Controller {
         views
     }
 
-    /// Feed observations to the state engine, storage domains included.
-    ///
-    /// The single place that does it. Observations reach the controller by
-    /// three routes -- its own probing, an agent's batch, and this method --
-    /// and the storage views have to be derived on all of them. The one that
-    /// matters most is the agent batch: `nfs.server.exports` is a local probe,
-    /// so an agent's report is the *only* way it ever arrives.
-    pub(super) fn ingest_into_engine(&mut self, observations: &[Observation]) -> Vec<StateTransition> {
-        let views = self.storage_views(observations);
-        let mut transitions = self.engine.ingest_all(observations);
-        transitions.extend(self.engine.ingest_all(&views));
-        transitions
-    }
-
     pub async fn ingest_observations(
         &mut self,
         observations: &[Observation],
     ) -> Result<Vec<StateTransition>, StoreError> {
-        self.store().ingest_observations(observations).await?;
-        let transitions = self.ingest_into_engine(observations);
-        for transition in &transitions {
-            self.store().save_state_transition(transition).await?;
-        }
-        for state in self.engine.states() {
-            self.store().save_entity_state(state).await?;
-        }
+        let (_, transitions) = self.ingest_observations_recorded(observations).await?;
         Ok(transitions)
+    }
+
+    pub(super) async fn ingest_observations_recorded(
+        &mut self,
+        observations: &[Observation],
+    ) -> Result<(crate::persistence::IngestOutcome, Vec<StateTransition>), StoreError> {
+        let views = self.storage_views(observations);
+        let mut candidate = self.engine.clone();
+        let result = self
+            .store()
+            .apply_observations(&self.config().environment, observations, &views, &mut candidate)
+            .await?;
+        self.engine = candidate;
+        Ok(result)
     }
 }
 

@@ -48,8 +48,9 @@ fn is_opening(deduplication_key: &str) -> bool {
 /// Decides whether a notification is new.
 #[derive(Debug, Clone)]
 pub struct Deduplicator {
-    sent: HashMap<(String, String), Timestamp>,
+    sent: HashMap<(String, String), (Timestamp, String)>,
     lease_minutes: i64,
+    pub(crate) last_attempt: Option<std::time::Instant>,
 }
 
 impl Default for Deduplicator {
@@ -64,6 +65,7 @@ impl Deduplicator {
         Self {
             sent: HashMap::new(),
             lease_minutes: DEFAULT_LEASE_MINUTES,
+            last_attempt: None,
         }
     }
 
@@ -76,8 +78,10 @@ impl Deduplicator {
     /// Load previously sent notifications, for resuming after a restart.
     pub fn seed(&mut self, records: impl IntoIterator<Item = NotificationRecord>) {
         for record in records {
-            self.sent
-                .insert((record.provider, record.deduplication_key), record.sent_at);
+            self.sent.insert(
+                (record.provider, record.deduplication_key),
+                (record.sent_at, record.incident_id),
+            );
         }
     }
 
@@ -91,10 +95,23 @@ impl Deduplicator {
     /// makes a genuine reopening audible again.
     pub fn should_send(&self, notification: &Notification, provider: &str) -> bool {
         let key = (provider.to_string(), notification.deduplication_key());
+        // Respect pre-upgrade delivery records for the same incident.
+        let legacy = (
+            provider.to_string(),
+            format!("{}:{}", notification.fingerprint, notification.trigger.as_str()),
+        );
+        if notification.event_id.is_some()
+            && self
+                .sent
+                .get(&legacy)
+                .is_some_and(|(sent_at, id)| id == &notification.incident_id && *sent_at >= notification.created_at)
+        {
+            return false;
+        }
         match self.sent.get(&key) {
             None => true,
-            Some(_) if is_opening(&key.1) => false,
-            Some(sent_at) => now() - *sent_at >= chrono::Duration::minutes(self.lease_minutes),
+            Some(_) if is_opening(&key.1) || key.1.contains(":event:") => false,
+            Some((sent_at, _)) => now() - *sent_at >= chrono::Duration::minutes(self.lease_minutes),
         }
     }
 
@@ -108,7 +125,8 @@ impl Deduplicator {
         let key = format!("{fingerprint}{suffix}");
         let mut dropped = Vec::new();
         self.sent.retain(|(_, existing), _| {
-            let keep = existing != &key;
+            let keep =
+                existing != &key && !(existing.starts_with(&format!("{fingerprint}:event:")) && is_opening(existing));
             if !keep {
                 dropped.push(existing.clone());
             }
@@ -120,8 +138,10 @@ impl Deduplicator {
     /// Record that a notification was sent.
     pub fn record(&mut self, notification: &Notification, provider: &str) -> NotificationRecord {
         let sent_at = now();
-        self.sent
-            .insert((provider.to_string(), notification.deduplication_key()), sent_at);
+        self.sent.insert(
+            (provider.to_string(), notification.deduplication_key()),
+            (sent_at, notification.incident_id.clone()),
+        );
         NotificationRecord {
             incident_id: notification.incident_id.clone(),
             deduplication_key: notification.deduplication_key(),
@@ -145,6 +165,21 @@ impl Deduplicator {
         self.sent.is_empty()
     }
 
+    /// Retain only events that can still be offered. This bounds the worker's
+    /// memory without expiring deduplication for a current lifecycle event.
+    pub fn retain_candidates(&mut self, notifications: &[Notification]) {
+        let keys: std::collections::HashSet<_> = notifications
+            .iter()
+            .flat_map(|n| {
+                [
+                    n.deduplication_key(),
+                    format!("{}:{}", n.fingerprint, n.trigger.as_str()),
+                ]
+            })
+            .collect();
+        self.sent.retain(|(_, key), _| keys.contains(key));
+    }
+
     /// Drop records older than the lease, so the map does not grow forever.
     ///
     /// Openings are exempt: theirs is not a lease that expires but a record
@@ -154,7 +189,7 @@ impl Deduplicator {
         let cutoff = now() - chrono::Duration::minutes(self.lease_minutes * 2);
         let before = self.sent.len();
         self.sent
-            .retain(|(_, key), sent_at| is_opening(key) || *sent_at >= cutoff);
+            .retain(|(_, key), (sent_at, _)| is_opening(key) || key.contains(":event:") || *sent_at >= cutoff);
         before - self.sent.len()
     }
 }
@@ -196,7 +231,7 @@ mod tests {
         // one incident must not wake the operator twice.
         let mut deduplicator = Deduplicator::new();
         let from_controller = notification(Trigger::Opened);
-        let from_fallback = notification(Trigger::Opened);
+        let from_fallback = from_controller.clone();
 
         deduplicator.record(&from_controller, "webhook");
         assert!(!deduplicator.should_send(&from_fallback, "webhook"));
@@ -233,7 +268,8 @@ mod tests {
     #[test]
     fn the_lease_expires_so_a_recurring_fault_is_heard_about_again() {
         let mut deduplicator = Deduplicator::new().with_lease_minutes(0);
-        let notification = notification(Trigger::Escalated);
+        let mut notification = notification(Trigger::Escalated);
+        notification.event_id = None; // Legacy callers still use a lease.
 
         deduplicator.record(&notification, "webhook");
         assert!(deduplicator.should_send(&notification, "webhook"));
@@ -329,14 +365,16 @@ mod tests {
         let mut deduplicator = Deduplicator::new();
         // Not an opening: those are exempt from pruning by design, and are
         // covered by their own test above.
-        deduplicator.record(&notification(Trigger::Escalated), "webhook");
+        let mut legacy = notification(Trigger::Escalated);
+        legacy.event_id = None;
+        deduplicator.record(&legacy, "webhook");
         assert_eq!(deduplicator.prune(), 0, "a fresh record is kept");
         assert_eq!(deduplicator.len(), 1);
 
         deduplicator
             .sent
             .values_mut()
-            .for_each(|at| *at = now() - chrono::Duration::days(7));
+            .for_each(|(at, _)| *at = now() - chrono::Duration::days(7));
         assert_eq!(deduplicator.prune(), 1);
         assert!(deduplicator.is_empty());
     }

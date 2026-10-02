@@ -10,7 +10,7 @@ mod debounce;
 mod engine;
 
 pub use debounce::{DebouncePolicy, Debouncer};
-pub use engine::{ProbeMapping, StateEngine};
+pub use engine::{ProbeMapping, StateEngine, StateStream};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -197,6 +197,8 @@ pub mod classification {
     /// Storage the entity provides or uses is impaired.
     pub const STORAGE_DEGRADED: &str = "STORAGE_DEGRADED";
     /// No observer can reach the entity.
+    /// At least one observed path is impaired while another reaches the host.
+    pub const NETWORK_PATH_DEGRADED: &str = "NETWORK_PATH_DEGRADED";
     pub const HOST_UNREACHABLE: &str = "HOST_UNREACHABLE";
     /// A service on the entity has failed.
     pub const SERVICE_FAILURE: &str = "SERVICE_FAILURE";
