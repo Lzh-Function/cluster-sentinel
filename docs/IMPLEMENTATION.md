@@ -1,27 +1,17 @@
 # Cluster Sentinel v0.3
-## Implementation Supplement
+## 実装要件とテスト手順
 
-`SPEC.md` が「何を作るか・どの設計原則に従うか」を規定するのに対し、本書は以下を規定する。
+本書は、データ型、通信形式、設定の優先順位、保存処理、probeの実行方法と障害時の処理を定める。
+Docker Compose疑似クラスタを含むテスト方法、実装の順序、各段階の完了条件も記載する。
+監視対象や機能の要件、設計原則は[SPEC.md](SPEC.md)を参照する。
 
-- 実装境界
-- データ契約
-- 通信契約
-- 設定優先順位
-- 永続化
-- Probe実行方式
-- 障害時挙動
-- Docker Compose疑似クラスタ
-- simulation / integration test
-- 実装順序
-- Definition of Done
-
-本書と `SPEC.md` が競合する場合は、**SPEC.md のアーキテクチャ原則を優先する。**
+本書と`SPEC.md`が競合する場合は、SPEC.mdのアーキテクチャ原則を優先する。
 
 ---
 
-# 1. Production Artifact
+# 1. 配布するバイナリ
 
-Production release artifactは原則、
+本番環境へ配布する成果物は、
 
 ```text
 sentinel
@@ -29,9 +19,9 @@ sentinel
 
 の単一実行バイナリとする。
 
-内部実装を複数module/crateへ分割することは許可するが、各監視対象hostに複数Sentinel実行ファイルを配布する設計は禁止する。
+内部実装は、複数のモジュールやcrateへ分割してよい。各監視対象ホストに配布するSentinel実行ファイルは一つにする。
 
-以下は同じbinaryのsubcommandとして提供する。
+以下は同じバイナリのサブコマンドとして提供する。
 
 ```bash
 sentinel controller
@@ -50,9 +40,9 @@ sentinel version
 
 ---
 
-# 2. Development Environment
+# 2. 開発環境
 
-Primary development environmentは、
+主な開発環境は、
 
 ```text
 Windows
@@ -65,11 +55,11 @@ Windows
 
 を想定する。
 
-実際のSlurm production nodeを日常的な開発環境として使用することを前提にしない。
+実際のSlurm本番ノードを日常的な開発環境として使用することを前提にしない。
 
 ---
 
-# 3. Test Environment Hierarchy
+# 3. テスト環境の4層
 
 テスト環境は以下の4層に分ける。
 
@@ -87,13 +77,13 @@ Level 4
 VM / Real Cluster Validation
 ```
 
-各層の責務を明確に分離する。
+各層で検証する内容を分ける。
 
 ---
 
-# 4. Level 1 — Unit / Mock Tests
+# 4. Level 1単体・mockテスト
 
-対象:
+対象
 
 ```text
 domain model
@@ -114,11 +104,11 @@ CI上で必ず実行可能であること。
 
 ---
 
-# 5. Level 2 — In-process Simulation
+# 5. Level 2プロセス内のシミュレーション
 
-実際のnetwork/processを利用せず、Probe結果を人工的に生成するsimulation backendを実装する。
+実際のネットワークやプロセスを使わず、人工的なProbe結果で検証する仕組みを実装する。
 
-例:
+例
 
 ```text
 Host:
@@ -136,33 +126,31 @@ IDLE
 
 等のObservationを投入し、State / Diagnosis / Incidentが期待通り生成されるか検証する。
 
-この層は高速かつdeterministicであること。
+短時間で実行でき、同じ入力に対して同じ結果を返すこと。
 
 ---
 
-# 6. Level 3 — Docker Compose Pseudo Cluster
+# 6. Level 3 Docker Compose疑似クラスタ
 
-Docker Composeによる疑似クラスタを、**正式な開発成果物かつ必須integration testbed**として実装する。
+Docker Composeによる疑似クラスタを、開発に必要な成果物とし、統合テスト環境として実装する。
 
-目的:
+本番クラスタに影響を与えず、以下を検証する。
 
-- 複数host相当環境の再現
+- 複数ホスト相当環境の再現
 - Agent / Controller実通信
 - Slurm実サービス
 - SSH
-- process/service failure
-- peer monitoring
-- network partition
-- controller failure
-- agent failure
+- プロセスやサービスの停止
+- ノード間の相互監視
+- 経路遮断
+- controller障害
+- agent障害
 - NFS論理障害
-- incident correlation
-
-をproduction clusterを壊さず検証すること。
+- 関連する診断のincidentへの統合
 
 ---
 
-# 7. Docker Compose Topology
+# 7. 疑似クラスタの構成
 
 最低限以下を提供する。
 
@@ -177,7 +165,7 @@ filesrv01
 filesrv02
 ```
 
-概念構成:
+概念構成
 
 ```text
                       controller
@@ -200,9 +188,9 @@ filesrv02
 
 ---
 
-# 8. Docker Directory Layout
+# 8. Docker用ファイルの配置
 
-推奨:
+推奨
 
 ```text
 /
@@ -243,7 +231,7 @@ filesrv02
 
 ---
 
-# 9. Docker Testbed Requirements
+# 9. 疑似クラスタの起動要件
 
 以下を満たす。
 
@@ -251,17 +239,17 @@ filesrv02
 docker compose up
 ```
 
-またはwrapper command一つで疑似クラスタを起動できること。
+または補助コマンド一つで疑似クラスタを起動できること。
 
-起動後、可能な範囲で自動health checkを行う。
+起動後、可能な範囲で稼働確認を自動で行う。
 
-Developerが各containerへ手作業で大量の初期設定を行う必要があってはならない。
+開発者が各コンテナへ大量の初期設定を手作業で行わずに済むこと。
 
 ---
 
-# 10. Real Slurm in Docker
+# 10. Docker内でのSlurm実行
 
-Docker疑似クラスタでは、Slurm parserだけでなく可能な範囲で本物の、
+Docker疑似クラスタでは、Slurmパーサーだけでなく可能な範囲で本物の、
 
 ```text
 munge
@@ -283,17 +271,17 @@ Sentinel observation
 Diagnosis
 ```
 
-というend-to-end挙動を検証すること。
+という観測から通知までの一連の挙動を検証すること。
 
 Slurm CLIをmockするだけのテストとは別に扱う。
 
 ---
 
-# 11. Container Roles
+# 11. コンテナごとの役割
 
 ## Controller
 
-少なくとも:
+少なくとも
 
 ```text
 Sentinel controller
@@ -308,7 +296,7 @@ munge
 
 ## Compute
 
-少なくとも:
+少なくとも
 
 ```text
 Sentinel agent
@@ -325,7 +313,7 @@ GPUは必須ではない。
 
 ## Fileserver
 
-少なくとも:
+少なくとも
 
 ```text
 Sentinel agent
@@ -335,15 +323,15 @@ NFS-related test service or simulated storage service
 
 を持つ。
 
-実NFS利用がWSL/Docker環境で不安定・危険な場合は、Docker integration layerではNFS service/network semanticsの再現を優先し、kernel-level NFS hang検証はVMへ委譲する。
+WSLやDockerで実NFSを安全に扱えない場合は、サービスの停止や通信障害を再現する。カーネル内でNFS処理が応答しなくなる挙動はVMで検証する。
 
 ---
 
-# 12. Docker Is Not Production
+# 12. Dockerと本番環境の区別
 
-Docker Composeはproduction deployment mechanismではない。
+本番環境への配置にDocker Composeを使わない。
 
-Productionでは、
+本番環境では、
 
 ```text
 systemd
@@ -353,11 +341,11 @@ single sentinel binary
 
 を基本とする。
 
-Container-specific assumptionをSentinel coreへ持ち込んではならない。
+コンテナ固有の前提をSentinel coreへ持ち込んではならない。
 
 ---
 
-# 13. Docker-specific Code Isolation
+# 13. Docker固有のコードの分離
 
 以下のようなDocker固有知識をcoreへ埋め込んではならない。
 
@@ -369,15 +357,15 @@ Docker socket
 Docker API
 ```
 
-Docker testbedはSentinelを外側から試験するfixture/infrastructureとして扱う。
+Dockerテスト環境は、Sentinelの実行結果を外部から確認するために使う。
 
 ---
 
-# 14. Failure Injection Framework
+# 14. 障害注入の仕組み
 
-Docker testbedには再利用可能なfailure injection mechanismを用意する。
+Dockerテスト環境には障害を繰り返し再現できる仕組みを用意する。
 
-最低限:
+最低限
 
 ```text
 agent failure
@@ -395,9 +383,9 @@ fileserver service failure
 
 ---
 
-# 15. Scenario Commands
+# 15. シナリオの実行コマンド
 
-目標UX:
+目標UX
 
 ```bash
 ./dev/compose/scenarios/stop-agent compute01
@@ -415,15 +403,15 @@ fileserver service failure
 ./dev/compose/scenarios/recover-all
 ```
 
-具体的なfile名は変更可能だが、同等の再現性を提供すること。
+具体的なファイル名は変更可能だが、同等の再現性を提供すること。
 
 ---
 
-# 16. Declarative Scenario Tests
+# 16. シナリオの期待結果の定義
 
-可能ならscenario expectationをmachine-readableにする。
+可能ならシナリオの期待結果を機械可読形式にする。
 
-例:
+例
 
 ```yaml
 name: slurmd_failure
@@ -445,11 +433,11 @@ diagnoses:
 
 ---
 
-# 17. Network Partition Scenarios
+# 17. 経路遮断のシナリオ
 
-非常に重要なintegration testとする。
+経路障害の誤診断を防ぐため、重要な統合テストとする。
 
-例:
+例
 
 ```text
 controller → compute01 FAIL
@@ -459,13 +447,13 @@ compute02 → compute01 OK
 filesrv01 → compute01 OK
 ```
 
-期待:
+期待
 
 ```text
 PATH_SPECIFIC_NETWORK_FAILURE
 ```
 
-またはcontroller-side connectivity degradation。
+またはcontroller側の通信異常。
 
 以下を誤って生成してはならない。
 
@@ -475,19 +463,19 @@ HOST_UNREACHABLE
 
 ---
 
-# 18. Full Host Failure Scenario
+# 18. ホスト全体の停止シナリオ
 
-例:
+例
 
 ```bash
 docker stop compute01
 ```
 
-または同等failure injection。
+または同等障害注入。
 
 複数observerから到達不能になることを確認する。
 
-期待:
+期待
 
 ```text
 HOST_UNREACHABLE
@@ -503,15 +491,15 @@ POWER_OFF
 
 ---
 
-# 19. Host Pause Scenario
+# 19. ホストの一時停止シナリオ
 
 ```bash
 docker pause compute01
 ```
 
-等を利用して、process schedulingを含めた無応答状態を模擬する。
+等を利用して、プロセス実行スケジュールを含めた無応答状態を模擬する。
 
-これは実kernel hard lockとは異なるが、
+これは実際のカーネルのハードロックとは異なるが、
 
 ```text
 network timeout
@@ -524,11 +512,11 @@ peer failure
 
 ---
 
-# 20. Agent Failure Scenario
+# 20. agentの停止シナリオ
 
 Sentinel agentのみ停止。
 
-期待:
+期待
 
 ```text
 network      HEALTHY
@@ -537,21 +525,21 @@ Slurm        HEALTHY
 Sentinel     FAILED
 ```
 
-Diagnosis:
+Diagnosis
 
 ```text
 SENTINEL_AGENT_FAILURE
 ```
 
-Host failureと誤診断しない。
+ホスト全体の障害と誤診断しない。
 
 ---
 
-# 21. SSH Failure Scenario
+# 21. SSHの停止シナリオ
 
-SSH serviceのみ停止。
+SSHサービスのみ停止。
 
-期待:
+期待
 
 ```text
 Sentinel RPC HEALTHY
@@ -559,7 +547,7 @@ Host         HEALTHY
 SSH          FAILED
 ```
 
-Diagnosis:
+Diagnosis
 
 ```text
 SSH_SERVICE_FAILURE
@@ -567,11 +555,11 @@ SSH_SERVICE_FAILURE
 
 ---
 
-# 22. slurmd Failure Scenario
+# 22. slurmdの停止シナリオ
 
 `slurmd`のみ停止。
 
-期待:
+期待
 
 ```text
 Host       HEALTHY
@@ -580,7 +568,7 @@ SSH        HEALTHY
 slurmd     FAILED
 ```
 
-Diagnosis:
+Diagnosis
 
 ```text
 SLURMD_SERVICE_FAILURE
@@ -588,11 +576,11 @@ SLURMD_SERVICE_FAILURE
 
 ---
 
-# 23. Slurm DRAIN Scenario
+# 23. Slurm DRAINのシナリオ
 
-Slurm control planeからtest nodeをDRAINする。
+Slurm制御系からテスト用ノードをDRAINする。
 
-期待:
+期待
 
 ```text
 Host       HEALTHY
@@ -602,13 +590,13 @@ slurmd     HEALTHY
 Slurm      DRAIN
 ```
 
-Diagnosis:
+Diagnosis
 
 ```text
 SLURM_ONLY_DEGRADATION
 ```
 
-Classification:
+Classification
 
 ```text
 SCHEDULER_DEGRADED
@@ -616,9 +604,9 @@ SCHEDULER_DEGRADED
 
 ---
 
-# 24. Controller Failure Scenario
+# 24. controllerの停止シナリオ
 
-Sentinel controller processまたはcontroller containerを停止する。
+Sentinel controllerプロセスまたはcontrollerコンテナを停止する。
 
 Agent側で、
 
@@ -634,13 +622,13 @@ Controller復旧後、Observationが再送されること。
 
 ---
 
-# 25. Fileserver Failure Scenario
+# 25. ファイルサーバーの停止シナリオ
 
-filesrv01のstorage/NFS serviceを停止する。
+filesrv01のstorage/NFSサービスを停止する。
 
-Host/container自体は生かしておく。
+ホストやコンテナ自体は稼働を続ける。
 
-期待:
+期待
 
 ```text
 filesrv01 host HEALTHY
@@ -649,15 +637,15 @@ SSH            HEALTHY
 storage/NFS    FAILED
 ```
 
-Host failureとservice failureを区別する。
+ホスト全体の障害とサービス障害を区別する。
 
 ---
 
-# 26. Shared Storage Failure Scenario
+# 26. 共有ストレージ障害のシナリオ
 
-複数compute nodeが同じStorage Entityへ依存するtest topologyを作る。
+複数計算ノードが同じStorage Entityへ依存するテスト用の依存関係を作る。
 
-例:
+例
 
 ```text
 compute01
@@ -665,7 +653,7 @@ compute02
     → storage01 → filesrv01
 ```
 
-filesrv01/storage service障害時に、
+filesrv01/storageサービス障害時に、
 
 ```text
 compute01 storage degradation
@@ -683,19 +671,19 @@ SHARED_STORAGE_FAILURE
 
 ---
 
-# 27. Client-only Storage Failure Scenario
+# 27. クライアント単体のストレージ障害シナリオ
 
-compute01のみstorage accessを遮断する。
+compute01のみストレージアクセスを遮断する。
 
 filesrv01とcompute02は正常。
 
-期待:
+期待
 
 ```text
 NFS_CLIENT_FAILURE
 ```
 
-またはlocal client/storage-path diagnosis。
+またはクライアント単体やストレージ経路の診断。
 
 以下を生成してはならない。
 
@@ -723,15 +711,15 @@ NIC hardware failure
 physical power loss
 ```
 
-これらはVMまたは実cluster validationへ委譲する。
+これらはVMまたは実クラスタでの検証へ委譲する。
 
 ---
 
-# 29. Level 4 — VM / Real Cluster Validation
+# 29. Level 4 VM・実クラスタでの検証
 
 Dockerでは十分に再現できない機能を検証する。
 
-主対象:
+主対象
 
 ```text
 systemd behavior
@@ -747,11 +735,11 @@ actual Slurm daemon interactions
 
 ---
 
-# 30. VM Testbed
+# 30. VMのテスト環境
 
 必要になった段階で小規模VM環境を使用する。
 
-例:
+例
 
 ```text
 ctrl01
@@ -761,13 +749,13 @@ filesrv01
 
 程度でもよい。
 
-VM testbedを日常的な主開発環境にすることは必須ではない。
+VMテスト環境を日常的な主開発環境にすることは必須ではない。
 
 ---
 
-# 31. Real Cluster Validation
+# 31. 実クラスタでの検証
 
-`example_cluster` は開発環境ではなく、
+`example_cluster`は開発環境ではなく、
 
 ```text
 staging / production validation environment
@@ -775,7 +763,7 @@ staging / production validation environment
 
 として扱う。
 
-導入順:
+導入順
 
 ```text
 read-only controller
@@ -793,9 +781,9 @@ full deployment
 
 ---
 
-# 32. Production Fault Injection
+# 32. 本番環境での障害注入
 
-実clusterで危険なfailure simulationを自動実行してはならない。
+実クラスタで危険な障害シミュレーションを自動実行してはならない。
 
 特に、
 
@@ -808,11 +796,11 @@ filesystem manipulation
 
 等は管理者判断下のみ。
 
-Docker/VM testで代替できるものはそちらで行う。
+DockerやVMでのテストで代替できるものはそちらで行う。
 
 ---
 
-# 33. Initial Implementation Strategy
+# 33. 初期実装の方針
 
 初期実装では過度な抽象化を避ける。
 
@@ -827,13 +815,13 @@ controller HA
 arbitrary remote command execution
 ```
 
-ProbeやDiagnosisRuleはbinaryへstatic compileする。
+ProbeやDiagnosisRuleはバイナリへコンパイルする。
 
 ---
 
-# 34. Recommended Rust Stack
+# 34. 推奨するRustのライブラリ
 
-基本候補:
+基本候補
 
 ```text
 tokio
@@ -850,18 +838,18 @@ uuid
 thiserror
 ```
 
-原則:
+原則
 
-- core/library層ではtyped error
-- CLI/application boundaryでは `anyhow` 等を利用してよい
-- `unwrap()` / `expect()` は限定使用
-- probe failureでdaemon全体をpanicさせない
+- 共通処理とライブラリ層では専用のエラー型
+- CLIなどのアプリケーション側では`anyhow`等を利用してよい
+- `unwrap()` / `expect()`は限定使用
+- probe障害でデーモン全体をpanicさせない
 
 ---
 
-# 35. Repository Layout
+# 35. リポジトリ構成
 
-推奨:
+推奨
 
 ```text
 /
@@ -916,9 +904,9 @@ thiserror
 
 ---
 
-# 36. Core Domain Types
+# 36. 共通処理のデータ型
 
-以下を明示的domain typeとして実装する。
+以下を明示的データ型として実装する。
 
 ```text
 Environment
@@ -941,13 +929,13 @@ AgentSession
 PeerAssignment
 ```
 
-単なる `HashMap<String, Value>` の集合だけでdomain modelを構成してはならない。
+データモデルには専用の型を使い、`HashMap<String, Value>`の集合だけで構成しない。
 
 ---
 
-# 37. ManagedEntity
+# 37. ManagedEntityのフィールド
 
-最低限:
+最低限
 
 ```text
 id
@@ -963,7 +951,7 @@ created_at
 updated_at
 ```
 
-Entity type:
+Entity type
 
 ```text
 host
@@ -975,11 +963,11 @@ external_dependency
 
 ---
 
-# 38. Entity Identity
+# 38. Entityの識別方法
 
 DB内部ではUUID等を使用する。
 
-Discovery merge用natural key:
+Discovery統合用識別キー
 
 ```text
 environment
@@ -989,17 +977,17 @@ entity_type
 canonical_name
 ```
 
-IP addressをHost identityとして使用しない。
+IPアドレスをホストの識別キーとして使用しない。
 
-Slurm NodeNameとhostnameも分離する。
+Slurm NodeNameとホスト名も分離する。
 
 ---
 
-# 39. Capability
+# 39. Capabilityの表現
 
-Namespaced stringとする。
+名前空間を持つ文字列とする。
 
-例:
+例
 
 ```text
 host.metrics
@@ -1025,9 +1013,9 @@ notification.fallback
 
 ---
 
-# 40. Capability Resolution
+# 40. Capabilityの優先順位
 
-優先順位:
+優先順位
 
 ```text
 explicit force-disable
@@ -1043,9 +1031,9 @@ Roleのみを根拠にprobeを起動しない。
 
 ---
 
-# 41. DependencyEdge
+# 41. DependencyEdgeのフィールド
 
-最低限:
+最低限
 
 ```text
 id
@@ -1059,7 +1047,7 @@ first_seen_at
 last_seen_at
 ```
 
-方向:
+方向
 
 ```text
 A depends on B
@@ -1067,15 +1055,15 @@ A depends on B
 A → B
 ```
 
-Graphはcycleを許容する。
+依存グラフは閉路を許容する。
 
-Traversalではcycle protection必須。
+探索では訪問済みの対象を記録し、閉路による無限探索を防ぐ。
 
 ---
 
-# 42. Probe Interface
+# 42. probeのインターフェース
 
-概念:
+概念
 
 ```rust
 trait Probe {
@@ -1088,13 +1076,13 @@ trait Probe {
 }
 ```
 
-実際のRust interfaceはobject safety等に合わせて調整可能。
+実際のRustインターフェースはobject safety等に合わせて調整可能。
 
 ---
 
-# 43. Probe Result
+# 43. probeの実行結果
 
-最低限:
+最低限
 
 ```text
 observation_id
@@ -1114,7 +1102,7 @@ error_code optional
 error_message optional
 ```
 
-Status:
+Status
 
 ```text
 OK
@@ -1128,7 +1116,7 @@ NOT_APPLICABLE
 
 ---
 
-# 44. Observation Immutability
+# 44. 保存済みの観測を変更しない
 
 保存済みObservationを書き換えない。
 
@@ -1144,41 +1132,41 @@ incident correlation
 
 ---
 
-# 45. Idempotent Ingestion
+# 45. 観測の重複挿入を防ぐ
 
-Observationにはglobal unique IDを持たせる。
+Observationには全体で一意のIDを持たせる。
 
 Agent spool再送でも二重挿入しない。
 
-Controller ingestionはidempotentとする。
+controllerの取り込みは同じIDを重複挿入しない処理とする。
 
 ---
 
-# 46. Time Model
+# 46. 時刻の扱い
 
-保存timestampはUTC。
+保存時刻はUTC。
 
-Probe latency/timeoutはmonotonic clockを使用。
+probeの所要時間とタイムアウトには、時刻変更の影響を受けない単調増加時計を使う。
 
-Incident timelineはwall clock。
+incidentの履歴には実時刻を使う。
 
 ---
 
-# 47. Clock Skew
+# 47. 時刻ずれ
 
-Agent/controller間のwall-clock差を監視する。
+agentとcontrollerの実時刻の差を監視する。
 
-閾値超過:
+閾値超過
 
 ```text
 CLOCK_SKEW
 ```
 
-Clock skewがあってもObservationを破棄しない。
+時刻ずれがあってもObservationを破棄しない。
 
 ---
 
-# 48. Probe Scheduler
+# 48. probeの実行スケジュール
 
 Probeごとに、
 
@@ -1191,11 +1179,11 @@ enabled
 
 を管理する。
 
-global timer loopへの直書きは禁止。
+probeのスケジュールを、一つの共通タイマーループに直接書き込まない。
 
 ---
 
-# 49. Probe Isolation
+# 49. probeの失敗の隔離
 
 1つのprobeが、
 
@@ -1210,11 +1198,11 @@ filesystem stall
 
 ---
 
-# 50. Common Command Runner
+# 50. 外部コマンドの共通実行処理
 
-External command実行を共通化する。
+外部コマンドの実行を共通化する。
 
-必須:
+必須
 
 ```text
 timeout
@@ -1226,11 +1214,11 @@ allowlisted command
 structured error
 ```
 
-Probeごとに無秩序な `Command::new()` を実装しない。
+各probeで`Command::new()`を直接使わず、共通の実行処理を使う。
 
 ---
 
-# 51. Output Limits
+# 51. コマンド出力の上限
 
 以下の巨大出力対策を行う。
 
@@ -1241,13 +1229,13 @@ sacct
 zpool
 ```
 
-Truncate時はその事実をObservationへ記録する。
+出力を切り詰めた場合は、その事実をObservationへ記録する。
 
 ---
 
-# 52. Journal Safety
+# 52. journalの取得範囲
 
-Incident evidence取得時:
+incidentの根拠となるjournalの取得範囲
 
 ```text
 time range
@@ -1258,7 +1246,7 @@ line/byte limit
 
 で制限する。
 
-候補:
+候補
 
 ```text
 ±5 minutes
@@ -1266,11 +1254,11 @@ line/byte limit
 1 MiB
 ```
 
-configurable。
+設定で変更可能。
 
 ---
 
-# 53. NFS Probe Safety
+# 53. NFS検査の安全制約
 
 NFS mountごとに、
 
@@ -1280,15 +1268,15 @@ max outstanding active filesystem probe = 1
 
 とする。
 
-前probeがSTUCKなら新規filesystem syscall probeを作らない。
+前回のprobeがSTUCKなら、ファイルシステムにアクセスするprobeを新たに起動しない。
 
-TCP/2049等のnon-filesystem probeは継続可能。
+TCP/2049など、ファイルシステムへアクセスしない検査は継続できる。
 
 ---
 
-# 54. Agent Local Spool
+# 54. agentのローカルspool
 
-Controller unreachable時のObservationを、
+Controller到達不能時のObservationを、
 
 ```text
 SQLite spool
@@ -1296,13 +1284,13 @@ SQLite spool
 
 へ保存する。
 
-例:
+例
 
 ```text
 /var/lib/sentinel/spool.db
 ```
 
-要件:
+要件
 
 ```text
 WAL
@@ -1314,9 +1302,9 @@ crash recovery
 
 ---
 
-# 55. Spool Capacity
+# 55. spoolの容量制限
 
-無限成長禁止。
+spoolが無制限に増加しないように、保存量に上限を設ける。
 
 ```text
 maximum age
@@ -1324,45 +1312,45 @@ maximum rows
 maximum bytes
 ```
 
-をconfigurableにする。
+を設定で変更可能にする。
 
-重大Event/Transitionは通常metricsより保持優先度を高くする。
+重大なイベントや状態遷移は、通常の測定値よりも保持優先度を高くする。
 
 ---
 
-# 56. Controller Database
+# 56. controllerのDB
 
-MVP:
+MVP
 
 ```text
 SQLite + WAL
 ```
 
-例:
+例
 
 ```text
 /var/lib/sentinel/sentinel.db
 ```
 
-Schema変更はmigrationのみ。
+DBスキーマは、マイグレーションでのみ変更する。
 
 ---
 
-# 57. Configuration Versioning
+# 57. 設定とDBのバージョン管理
 
-Config:
+Config
 
 ```toml
 config_version = 1
 ```
 
-DB migration versionも保持する。
+DBマイグレーションバージョンも保持する。
 
-Future config versionを黙って読み込まない。
+未対応の設定バージョンは読み込みを拒否する。
 
 ---
 
-# 58. Configuration Precedence
+# 58. 設定値の優先順位
 
 ```text
 CLI
@@ -1376,11 +1364,11 @@ runtime discovery
 built-in default
 ```
 
-Debug時にvalue sourceを確認可能にする。
+デバッグ時に、設定値をどこから読み込んだか確認できるようにする。
 
 ---
 
-# 59. Default Paths
+# 59. 既定パス
 
 ```text
 /etc/sentinel/config.toml
@@ -1390,11 +1378,11 @@ Debug時にvalue sourceを確認可能にする。
 /run/sentinel/
 ```
 
-Loggingは基本journald。
+ログ出力先は、基本的にjournaldとする。
 
 ---
 
-# 60. Config Validation
+# 60. 設定の検証
 
 ```bash
 sentinel config check
@@ -1415,9 +1403,9 @@ security configuration
 
 ---
 
-# 61. Controller-Agent Protocol
+# 61. controllerとagentの通信形式
 
-MVP:
+MVP
 
 ```text
 versioned HTTPS API
@@ -1429,21 +1417,21 @@ protobuf/gRPCは将来追加可能。
 
 ---
 
-# 62. Protocol Version
+# 62. プロトコルのバージョン
 
-例:
+例
 
 ```text
 /v1/...
 ```
 
-Binary versionとprotocol versionを分離する。
+バイナリのバージョンと通信プロトコルのバージョンを分ける。
 
 ---
 
-# 63. Minimum API
+# 63. 最低限必要なAPI
 
-概念:
+概念
 
 ```text
 POST /v1/agents/register
@@ -1458,9 +1446,9 @@ GET /v1/peer/health
 
 ---
 
-# 64. Agent Registration
+# 64. agentの登録情報
 
-報告:
+報告
 
 ```text
 agent version
@@ -1473,13 +1461,13 @@ capabilities
 hardware summary
 ```
 
-Controllerがinventoryへmergeする。
+Controllerが監視対象一覧へ統合する。
 
 ---
 
-# 65. Authentication
+# 65. 認証
 
-完全unauthenticatedは禁止。
+認証なしの通信は禁止する。
 
 MVPでは、
 
@@ -1491,17 +1479,17 @@ cluster-scoped credential
 
 でもよい。
 
-将来mTLS/per-node credentialへ交換可能な設計とする。
+将来、mTLSやノード別のcredentialへ移行できる設計とする。
 
-Secretをbinaryへ埋め込まない。
+Secretをバイナリへ埋め込まない。
 
 ---
 
-# 66. Peer Assignment
+# 66. 監視元の割り当て
 
-deterministicかつtopology-awareなassignmentを目標とする。
+同じ入力から同じ監視元を選び、依存関係も考慮して割り当てることを目標とする。
 
-各targetにつき可能なら、
+各対象につき可能なら、
 
 ```text
 same dependency domain
@@ -1511,7 +1499,7 @@ independent observer
 
 から観測者を選ぶ。
 
-Default degree:
+監視元の数の既定値
 
 ```text
 3
@@ -1519,9 +1507,9 @@ Default degree:
 
 ---
 
-# 67. Peer Assignment Safety
+# 67. 監視元の選択制約
 
-避ける:
+避ける
 
 ```text
 self peer
@@ -1529,13 +1517,13 @@ duplicate observer
 all observers in same failure domain
 ```
 
-Assignment revisionを持つ。
+割り当てのリビジョンを持つ。
 
 ---
 
-# 68. State Engine
+# 68. 状態エンジン
 
-Probeはraw factのみ返す。
+Probeは測定した事実のみ返す。
 
 Probe内で、
 
@@ -1548,9 +1536,9 @@ SHARED_STORAGE_FAILURE
 
 ---
 
-# 69. State Components
+# 69. 状態の構成要素
 
-最低限:
+最低限
 
 ```text
 availability
@@ -1569,9 +1557,9 @@ NOT_APPLICABLE対応必須。
 
 ---
 
-# 70. Debounce / Hysteresis
+# 70. 連続失敗・成功回数による状態判定
 
-初期default:
+初期既定値
 
 ```text
 warning = 2 failures
@@ -1583,13 +1571,13 @@ Slurm DRAIN等の明示状態は即時Event化可能。
 
 ---
 
-# 71. Diagnosis Rules
+# 71. 診断ルール
 
-MVPではtyped Rust rules。
+MVPではRustで実装したルール。
 
-Generic DSLは作らない。
+汎用のルール記述言語は作らない。
 
-最低限:
+最低限
 
 ```text
 HOST_UNREACHABLE
@@ -1615,7 +1603,7 @@ CLOCK_SKEW
 
 ---
 
-# 72. Diagnosis Evidence
+# 72. 診断の根拠
 
 Diagnosisは、
 
@@ -1633,7 +1621,7 @@ confidence
 
 ---
 
-# 73. Confidence
+# 73. 診断の確信度
 
 ```text
 LOW
@@ -1642,15 +1630,15 @@ HIGH
 CONFIRMED
 ```
 
-`CONFIRMED` は直接evidenceがある場合のみ。
+`CONFIRMED`は直接根拠となる観測がある場合のみ。
 
-Peer reachabilityだけでは通常 `HIGH` まで。
+Peer到達性だけでは通常`HIGH`まで。
 
 ---
 
-# 74. Incident Correlation
+# 74. 複数の診断の統合
 
-利用:
+利用
 
 ```text
 time proximity
@@ -1662,7 +1650,7 @@ same network failure pattern
 
 ---
 
-# 75. Incident Lifecycle
+# 75. incidentの状態遷移
 
 ```text
 OPEN
@@ -1672,25 +1660,25 @@ RESOLVED
 SUPPRESSED
 ```
 
-Root service復旧だけで依存clients未復旧ならRESOLVEDにしない。
+原因となったサービスが復旧しても、依存するクライアントが未復旧ならRESOLVEDにしない。
 
 ---
 
-# 76. Maintenance
+# 76. maintenance中の処理
 
 Maintenance中もObservationを収集する。
 
-抑制するのは基本notification。
+抑制するのは基本通知。
 
 異常stateをHEALTHYへ書き換えない。
 
 ---
 
-# 77. Notifications
+# 77. 通知
 
-Provider abstractionを使用。
+通知先ごとのインターフェースを使用。
 
-MVP推奨:
+MVP推奨
 
 ```text
 generic webhook
@@ -1702,7 +1690,7 @@ generic webhook
 ntfy
 ```
 
-通知対象:
+通知対象
 
 ```text
 new incident
@@ -1716,13 +1704,13 @@ Pollingごとの再通知は禁止。
 
 ---
 
-# 78. Slurm Parsing
+# 78. Slurm出力の解析
 
-Unknown fieldやfield ordering changeへ寛容にする。
+未知のフィールドやフィールドの順序変更があっても、既知の値を読み取る。
 
-実Slurm output fixtureを保存する。
+実際のSlurm出力を、テストデータとして保存する。
 
-最低限:
+最低限
 
 ```text
 IDLE
@@ -1736,7 +1724,7 @@ INVALID_REG
 
 ---
 
-# 79. Current Mizuno Fixture
+# 79. 初期導入先のテストデータ
 
 現在の実構成は、
 
@@ -1744,29 +1732,29 @@ INVALID_REG
 fixtures/example_cluster/
 ```
 
-へtest fixtureとして保存してよい。
+へテストデータとして保存してよい。
 
 ただしcoreから参照しない。
 
 ---
 
-# 80. GPU Probe
+# 80. GPUの検査
 
-MVPは `nvidia-smi` でよい。
+MVPは`nvidia-smi`でよい。
 
-Expected GPUなしなら、
+想定するGPUなしなら、
 
 ```text
 NOT_APPLICABLE
 ```
 
-Expected GPUありなのにcommand/deviceが無ければ異常候補。
+GPUがあるはずなのに検査コマンドやデバイスがない場合は、異常の候補とする。
 
 ---
 
-# 81. File Server Observations
+# 81. ファイルサーバーの検査項目
 
-巨大な単一 `fileserver_health` probeは禁止。
+ファイルサーバーの検査を、一つの`fileserver_health` probeにまとめない。
 
 以下を分ける。
 
@@ -1782,11 +1770,11 @@ latency
 
 ---
 
-# 82. Logging
+# 82. ログ
 
-`tracing` 使用。
+`tracing`使用。
 
-Context:
+Context
 
 ```text
 entity_id
@@ -1796,11 +1784,11 @@ incident_id
 request_id
 ```
 
-Secretや巨大command outputはlogしない。
+秘密情報や大量のコマンド出力をログへ記録しない。
 
 ---
 
-# 83. Self Monitoring
+# 83. Sentinel自身の状態確認
 
 Sentinel自身について、
 
@@ -1818,9 +1806,9 @@ probe failures
 
 ---
 
-# 84. Graceful Shutdown
+# 84. 終了処理
 
-SIGTERM時:
+SIGTERM時
 
 ```text
 stop new work
@@ -1833,9 +1821,9 @@ close DB safely
 
 # 85. systemd
 
-Production deploymentはsystemd前提。
+本番環境はsystemdで実行する。
 
-可能な限りhardening:
+可能な限り権限とアクセスの制限
 
 ```text
 NoNewPrivileges
@@ -1847,13 +1835,13 @@ ProtectControlGroups
 RestrictSUIDSGID
 ```
 
-必要pathのみwrite許可。
+必要なパスだけに書き込みを許可する。
 
 ---
 
-# 86. CI
+# 86. CIの検査
 
-最低限:
+最低限
 
 ```bash
 cargo fmt --check
@@ -1869,7 +1857,7 @@ cargo test --all
 
 ---
 
-# 87. Docker Tests in CI
+# 87. CIでのDockerテスト
 
 可能なCI環境では、
 
@@ -1889,15 +1877,15 @@ basic peer communication
 one or more failure scenarios
 ```
 
-をCI integration jobとして実行可能にする。
+をCIの統合テスト用ジョブとして実行できるようにする。
 
-Docker利用不可のCIでもunit/mock testsは通るよう分離する。
+Dockerを使えないCIでも単体・mockテストを実行できるよう、Dockerテストを分ける。
 
 ---
 
-# 88. Test Pyramid
+# 88. テストの種類
 
-必須:
+必須
 
 ```text
 unit
@@ -1910,7 +1898,7 @@ Docker Compose integration
 scenario tests
 ```
 
-追加:
+追加
 
 ```text
 VM
@@ -1919,11 +1907,11 @@ real cluster staged test
 
 ---
 
-# 89. Scenario Golden Tests
+# 89. 代表的な状態と期待結果のテスト
 
 代表状態を固定する。
 
-例:
+例
 
 ```text
 Host OK
@@ -1933,7 +1921,7 @@ slurmd OK
 Slurm DRAIN
 ```
 
-期待:
+期待
 
 ```text
 SCHEDULER_DEGRADED
@@ -1942,9 +1930,9 @@ SLURM_ONLY_DEGRADATION
 
 ---
 
-# 90. Resource Budget
+# 90. CPU・メモリなどの使用量
 
-Agent通常時目標:
+Agent通常時目標
 
 ```text
 RAM < 100 MiB desirable
@@ -1955,11 +1943,11 @@ minimal network traffic
 
 ---
 
-# 91. Web UI
+# 91. Web UIの実装順序
 
 Core完成後。
 
-順序:
+順序
 
 ```text
 CLI
@@ -1967,13 +1955,13 @@ CLI
 → Web UI
 ```
 
-Docker testbedの存在を理由にUIを先行させない。
+Dockerテスト環境の存在を理由にUIを先行させない。
 
 ---
 
-# 92. Documentation
+# 92. 必要なドキュメント
 
-v1までに最低限:
+v1までに最低限
 
 ```text
 README.md
@@ -1984,13 +1972,13 @@ docs/SECURITY.md
 docs/DEVELOPMENT.md
 ```
 
-`DEVELOPMENT.md` にはDocker Compose testbedの利用方法を必ず含める。
+`DEVELOPMENT.md`にはDocker Composeテスト環境の利用方法を必ず含める。
 
 ---
 
-# 93. Development Documentation Requirements
+# 93. 開発ガイドに記載する内容
 
-`docs/DEVELOPMENT.md` に最低限記載:
+`docs/DEVELOPMENT.md`に最低限記載
 
 ```text
 WSL/Linux prerequisites
@@ -2018,9 +2006,9 @@ when VM testing is required
 
 ---
 
-# 94. Implementation Milestones
+# 94. 開発段階
 
-## M0 — Repository / Core Domain
+## M0、Repository / Core Domain
 
 ```text
 CLI skeleton
@@ -2030,7 +2018,7 @@ SQLite migrations
 logging
 ```
 
-Done:
+Done
 
 ```bash
 sentinel version
@@ -2039,7 +2027,7 @@ sentinel config check
 
 ---
 
-## M1 — Passive Controller + Slurm
+## M1、Passive Controller + Slurm
 
 ```text
 controller
@@ -2050,17 +2038,17 @@ persistence
 CLI status
 ```
 
-Done:
+Done
 
 ```bash
 sentinel status
 ```
 
-でfixtureまたは実Slurmからstate表示。
+でテストデータまたは実Slurmからstate表示。
 
 ---
 
-## M2 — Agent + Protocol
+## M2、Agent + Protocol
 
 ```text
 agent daemon
@@ -2072,11 +2060,11 @@ runtime discovery
 
 ---
 
-## M3 — Docker Compose Pseudo Cluster
+## M3、Docker Compose Pseudo Cluster
 
-このmilestoneを正式に追加する。
+この開発段階を正式に追加する。
 
-実装:
+実装
 
 ```text
 Compose topology
@@ -2090,7 +2078,7 @@ health checks
 reset scripts
 ```
 
-Done:
+Done
 
 ```bash
 docker compose up
@@ -2108,7 +2096,7 @@ sentinel status
 
 ---
 
-## M4 — Basic Host Monitoring
+## M4、Basic Host Monitoring
 
 ```text
 Sentinel RPC
@@ -2118,11 +2106,11 @@ systemd/process
 host metrics
 ```
 
-Docker上でagent/SSH failure scenarioを通す。
+Docker上でagent/SSH障害シナリオを通す。
 
 ---
 
-## M5 — Slurm Diagnosis
+## M5、Slurm Diagnosis
 
 ```text
 slurmd
@@ -2131,18 +2119,18 @@ controller state
 resource mismatch
 ```
 
-Docker上の実Slurm testbedで、
+Docker上の実Slurmテスト環境で、
 
 ```text
 stop-slurmd
 drain-node
 ```
 
-scenarioを通す。
+シナリオを通す。
 
 ---
 
-## M6 — Storage / NFS
+## M6、Storage / NFS
 
 ```text
 Storage entities
@@ -2152,13 +2140,13 @@ NFS server
 safe active probing
 ```
 
-Dockerではservice/network-level NFS scenarioを実装。
+DockerではサービスやネットワークのNFSシナリオを実装。
 
-Kernel-level hard mount挙動はVM test requirementとして記録。
+カーネル内のhard mountの挙動は、VMで検証する要件として記録する。
 
 ---
 
-## M7 — GPU
+## M7、GPU
 
 ```text
 NVIDIA discovery
@@ -2168,11 +2156,11 @@ Slurm GRES comparison
 
 Dockerではmock中心。
 
-実GPUはreal cluster validation。
+実GPUは実クラスタでの検証。
 
 ---
 
-## M8 — Peer Monitoring
+## M8、Peer Monitoring
 
 ```text
 assignment
@@ -2181,11 +2169,11 @@ quorum
 path failure detection
 ```
 
-Docker network isolation scenarioを必須とする。
+Dockerでネットワークを遮断するシナリオを必須とする。
 
 ---
 
-## M9 — Diagnosis / Incident Correlation
+## M9、Diagnosis / Incident Correlation
 
 ```text
 state engine
@@ -2195,11 +2183,11 @@ incident lifecycle
 evidence preservation
 ```
 
-Docker scenariosからend-to-end incident生成まで検証。
+Dockerの障害シナリオで、観測からincidentの生成、通知までを検証する。
 
 ---
 
-## M10 — Notification / Operations
+## M10、Notification / Operations
 
 ```text
 notification
@@ -2212,7 +2200,7 @@ operations docs
 
 ---
 
-## M11 — VM / Production Validation
+## M11、VM / Production Validation
 
 Dockerでは検証できない、
 
@@ -2229,15 +2217,15 @@ real GPU
 
 ---
 
-## M12 — Web UI
+## M12、Web UI
 
-Core acceptance tests通過後のみ。
+共通処理の受け入れテスト通過後のみ。
 
 ---
 
-# 95. Definition of Done Per Milestone
+# 95. 各開発段階の完了条件
 
-各milestoneは、
+各開発段階は、
 
 ```text
 code
@@ -2248,7 +2236,7 @@ migration if necessary
 
 が揃うまでDoneではない。
 
-Docker関連milestoneでは、
+Docker関連開発段階では、
 
 ```text
 reproducible Compose environment
@@ -2261,7 +2249,7 @@ cleanup/reset procedure
 
 ---
 
-# 96. Global v1 Acceptance
+# 96. v1の受け入れ条件
 
 最低限以下を確認する。
 
@@ -2279,11 +2267,11 @@ Slurm DRAIN
 
 ### slurmd Failure
 
-Host failureと区別。
+ホスト全体の障害と区別。
 
 ### SSH Failure
 
-Agent reachableだがSSHだけ異常を識別。
+Agentは到達可能で、SSHだけが異常な状態を識別する。
 
 ### Agent Failure
 
@@ -2299,19 +2287,19 @@ SSH/Slurm正常でAgentだけ異常。
 
 ### NFS Server Failure
 
-fileserver hostとNFS serviceを区別。
+ファイルサーバーのホストとNFSサービスを区別。
 
 ### Shared Storage Failure
 
-複数client障害をdependency-aware incidentへ相関。
+複数のクライアントの障害を、依存関係に基づいてincidentへまとめる。
 
 ### Client-local NFS Failure
 
-fileserver障害と誤診断しない。
+ファイルサーバー障害と誤診断しない。
 
 ### Controller Failure
 
-local spoolとpeer monitoring継続。
+ローカルspoolへの保存とノード間の相互監視を継続する。
 
 ### Reboot
 
@@ -2319,13 +2307,13 @@ VMまたは実機でboot ID変更を検出。
 
 ### Topology Change
 
-host/storage追加にcore変更不要。
+ホストやストレージを追加しても、共通処理の変更は不要とする。
 
 ---
 
-# 97. Docker-specific v1 Acceptance
+# 97. Dockerでのv1受け入れ手順
 
-以下を一連のautomationとして実行可能であること。
+以下を一連の自動テストとして実行可能であること。
 
 ```text
 1. Pseudo cluster startup
@@ -2367,9 +2355,9 @@ host/storage追加にcore変更不要。
 
 ---
 
-# 98. Implementation Priority
+# 98. 実装の優先順位
 
-迷った場合:
+迷った場合
 
 ```text
 correctness
@@ -2391,9 +2379,9 @@ UI polish
 
 ---
 
-# 99. Avoid Premature Complexity
+# 99. MVPに含めない機能
 
-MVPでは作らない:
+MVPでは作らない
 
 ```text
 plugin marketplace
@@ -2409,9 +2397,9 @@ Sentinel HA
 
 ---
 
-# 100. Preserve Extensibility
+# 100. 拡張用インターフェース
 
-拡張点:
+拡張点
 
 ```text
 InventoryProvider
@@ -2422,13 +2410,13 @@ PersistenceRepository
 AuthenticationProvider
 ```
 
-ただしinterfaceだけの巨大frameworkを先に作らない。
+実装する機能に必要なインターフェースを設け、用途が決まっていないものを先に増やさない。
 
 ---
 
-# 101. Deployment Data Must Remain Data
+# 101. 実環境の設定値をコードに埋め込まない
 
-以下はcore source codeへ埋め込まない。
+以下は共通処理のコードへ埋め込まない。
 
 ```text
 head01
@@ -2449,11 +2437,11 @@ current NFS topology
 current IP addresses
 ```
 
-Fixture/config/runtime discoveryで扱う。
+テストデータ、設定、自動検出で扱う。
 
 ---
 
-# 102. Final Implementation Principle
+# 102. 処理ごとの役割と検証方法
 
 全実装を通して、
 
@@ -2469,7 +2457,7 @@ Diagnosis
 Incident
 ```
 
-の責務分離を維持する。
+の役割を分けて実装する。
 
 また、
 
@@ -2485,10 +2473,8 @@ Sentinel core
 
 を分離する。
 
-Docker ComposeはSentinel architectureそのものではなく、
+Docker Composeは開発・テスト環境として維持する。
+サービス停止や通信遮断を再現し、Sentinelの検知・診断を検証する。
 
-> **Sentinelを安全かつ再現可能に壊して試すための第一級development/test infrastructure**
-
-として実装・維持する。
-
-日常的な開発・Coding Agentによる自動検証はWSL + Docker Composeを中心に行い、Dockerで再現できないkernel/systemd/hardwareレベルの挙動のみVMおよび実clusterで段階的に検証する。
+日常の開発とCoding Agentによる自動検証は、WSLとDocker Composeを中心に行う。
+Dockerで再現できないカーネル、systemd、ハードウェアの挙動は、VMと実クラスタで段階的に検証する。

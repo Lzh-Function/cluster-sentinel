@@ -1,17 +1,17 @@
 # 設定リファレンス
 
-Sentinel は TOML ファイルを 1 つ読み込みます。既定値は
-`/etc/sentinel/config.toml`（`--config`、または環境変数 `SENTINEL_CONFIG` で変更可）。
+SentinelはTOMLファイルを1つ読み込みます。既定値は
+`/etc/sentinel/config.toml`（`--config`、または環境変数`SENTINEL_CONFIG`で変更可）。
 
-何かを再起動する前に検証してください。
+設定を変更したら、サービスを再起動する前に検証してください。
 
 ```bash
 sentinel config check
 ```
 
-最初の 1 件で止まらず、検出できた問題をすべて報告します。
-設定が使用不能な場合は非 0 で終了します。
-`sentinel config show` は実効設定を出力します。
+最初の1件で止まらず、検出できた問題をすべて報告します。
+設定が使用不能な場合は非0で終了します。
+`sentinel config show`は実効設定を出力します。
 
 ## 設定ファイルの作り方
 
@@ -23,9 +23,9 @@ sentinel config init --role agent      --output /etc/sentinel/config.toml
 ```
 
 全設定が既定値のまま、説明つきで書き出されます。
-書き換えが必要なのは `CHANGE-ME` を含む行だけです。
+書き換えが必要なのは`CHANGE-ME`を含む行だけです。
 
-`sentinel install` は設定ファイル・systemd unit・credential をまとめて生成します。
+`sentinel install`は設定ファイル・systemd unit・credentialをまとめて生成します。
 詳細は [DEPLOYMENT.md](DEPLOYMENT.md) を参照してください。
 
 ## 優先順位
@@ -34,21 +34,20 @@ sentinel config init --role agent      --output /etc/sentinel/config.toml
 CLI  >  環境変数  >  設定ファイル  >  runtime discovery  >  built-in default
 ```
 
-解決された各値は、どの層から供給されたかを記憶しています。
+`sentinel config show`では、適用された値と、その値を指定した場所を確認できます。
 
 ## `config_version`
 
-必須。本ビルドが理解するのは version `1` です。
+必須。本ビルドが理解するのはversion `1`です。
 
-**より新しい** version を宣言したファイルは、部分的に読み込むのではなく拒否します。
-理解できない設定を中途半端に適用することは、
-「運用者が記述した対象とは別のものを監視する」ことを意味するためです。
+未対応のversionを指定した設定ファイルは拒否します。
+一部の設定だけを適用すると、指定したとおりに監視できなくなるためです。
 
 ```toml
 config_version = 1
 ```
 
-## 最小の agent 設定
+## 最小のagent設定
 
 ```toml
 config_version = 1
@@ -58,10 +57,10 @@ environment = "example-lab"
 controller_address = "controller.example:7443"
 ```
 
-controller address に既定値はありません。
-バイナリへ host 名を埋め込むことはしません。
+controllerアドレスに既定値はありません。
+バイナリへホスト名を埋め込むことはしません。
 
-## 最小の controller 設定
+## 最小のcontroller設定
 
 ```toml
 config_version = 1
@@ -86,64 +85,63 @@ enabled = true
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
-| `listen` | `host:port` | `0.0.0.0:7443` | controller の待受アドレス |
-| `inventory_interval` | duration | `5m` | inventory discovery の実行間隔（`scontrol` 実行・全 host probe を伴う） |
+| `listen` | `host:port` | `0.0.0.0:7443` | controllerの待受アドレス |
+| `inventory_interval` | duration | `5m` | 監視対象一覧自動検出の実行間隔（`scontrol`実行・全ホストprobeを伴う） |
 | `diagnosis_interval` | duration | `15s` | 診断・相関・通知の実行間隔 |
-| `observe` | bool | `true` | controller 自身も観測点として動作するか |
+| `observe` | bool | `true` | controller自身も観測点として動作するか |
 
-`diagnosis_interval` は **障害発生から通知までの遅延を決める値**です。
-保存済みデータを読むだけなので安価であり、
-高価な inventory discovery とは分けてあります。
+`diagnosis_interval`は障害発生から通知までの遅延を決める値です。
+保存済みデータを使う診断と、外部コマンドやprobeを実行する監視対象の自動検出を分けています。
 
 ### `[agent]`
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
-| `controller_address` | `host:port` | *(なし)* | 報告先 controller |
-| `spool_path` | path | `<state dir>/spool.db` | ローカル observation spool |
-| `roles` | 文字列配列 | `[]` | grouping と default 提示のみに使うラベル |
-| `listen` | `host:port` | `0.0.0.0:7444` | health endpoint の待受。peer がここを見る |
-| `ssh_port` | 整数 | *(sshd_config から検出)* | SSH ポート。自動検出できない場合のみ |
+| `controller_address` | `host:port` | *(なし)* | 報告先controller |
+| `spool_path` | path | `<state dir>/spool.db` | ローカルobservation spool |
+| `roles` | 文字列配列 | `[]` | グループ分けと既定値提示のみに使うラベル |
+| `listen` | `host:port` | `0.0.0.0:7444` | health endpointの待受。peerがここを見る |
+| `ssh_port` | 整数 | *(sshd_configから検出)* | SSHポート。自動検出できない場合のみ |
 
-`ssh_port` の優先順位:
+`ssh_port`の優先順位
 
 ```text
 [agent] ssh_port  >  /etc/ssh/sshd_config の Port  >  既定値 22
 ```
 
-通常は agent が `sshd_config` を読んで検出し、controller へ報告するため、
-指定は不要です。`listen` を変更した場合も agent が自分で報告するため、
-controller 側への追記は必要ありません。
+通常はagentが`sshd_config`を読んで検出し、controllerへ報告するため、
+指定は不要です。`listen`を変更した場合もagentが自分で報告するため、
+controller側への追記は必要ありません。
 
-`roles` は probe を有効化しません。後述の「Capability」を参照してください。
+`roles`はprobeを有効化しません。後述の「Capability」を参照してください。
 
 #### アドレスの決まり方
 
-peer がこの host を probe するアドレスは、次の順で決まります。
+peerがこのホストをprobeするアドレスは、次の順で決まります。
 
 | 優先 | 設定 | 用途 |
 | --- | --- | --- |
-| 1 | `[agent] address` | アドレスを直接指定。NAT 越しなど、host 自身から見えない場合 |
-| 2 | `[agent] interface` | NIC 名で指定。**fleet 全体で同じ 1 行が使えるので推奨** |
+| 1 | `[agent] address` | アドレスを直接指定。NAT越しなど、ホスト自身から見えない場合 |
+| 2 | `[agent] interface` | NIC名で指定。全ノードで同じ1行が使えるので推奨 |
 | 3 | 自動検出 | 下記の規則で順位付け |
 
 自動検出は次を行います。
 
-1. **到達不能なものを除外** — loopback アドレス、link-local（`169.254.0.0/16`、
-   `fe80::/10`）、および **`lo` インターフェース上の全アドレス**。
-   `lo` に付いた非 loopback アドレス（WSL の `10.255.255.254/32` など）は
+1. 到達不能なものを除外、loopbackアドレス、link-local（`169.254.0.0/16`、
+   `fe80::/10`）、および`lo`インターフェース上の全アドレス。
+   `lo`に付いた非loopbackアドレス（WSLの`10.255.255.254/32`など）は
    誰からも到達できません
-2. **物理 NIC を仮想 NIC より優先** — `docker*` / `br-*` / `veth*` / `virbr*` /
-   `wg*` / `tailscale*` などは後ろに回します
-3. IPv4 を IPv6 より優先し、以降は名前順（再起動しても順序が変わらないように）
+2. 物理NICを仮想NICより優先、`docker*` / `br-*` / `veth*` / `virbr*` /
+   `wg*` / `tailscale*`などは後ろに回します
+3. IPv4をIPv6より優先し、以降は名前順（再起動しても順序が変わらないように）
 
-**自動検出は「どの NIC がクラスタ内通信を担っているか」を答えられません。**
-それは host の性質ではなく site の事実です。
-`vlan101` / `vlan102` / `vlan103` を持つ host では、どれも同じくらい妥当に見えます。
+自動検出は「どのNICがクラスタ内通信を担っているか」を答えられません。
+使用するNICはクラスタの構成で決まるため、ホストの情報だけでは判別できません。
+`vlan101` / `vlan102` / `vlan103`を持つホストでは、どれも同じくらい妥当に見えます。
 
-そのため、**物理 NIC の候補が 2 つ以上ある場合は「曖昧である」と報告します。**
-黙って 1 つ選ぶと、間違っていても気づけないためです。
-`sentinel doctor` が候補一覧とともに表示します。
+そのため、物理NICの候補が2つ以上ある場合は「曖昧である」と報告します。
+確認せずに一つ選ぶと、間違っていても気づけないためです。
+`sentinel doctor`が候補一覧とともに表示します。
 
 ```
 Address:     192.0.2.10
@@ -156,10 +154,10 @@ Address:     192.0.2.10
     Set [agent] interface to say which.
 ```
 
-`interface` で指定した NIC に使えるアドレスが無い場合、
-**アドレスを報告しません**（別の NIC にフォールバックしません）。
-運用者が選ばなかったネットワークに peer を向けるのが、この設定で防ぎたい障害だからです。
-その場合 controller は host 名にフォールバックし、`doctor` が理由を表示します。
+`interface`で指定したNICに使えるアドレスが無い場合、
+アドレスを報告しません（別のNICにフォールバックしません）。
+運用者が選ばなかったネットワークにpeerを向けるのが、この設定で防ぎたい障害だからです。
+その場合controllerはホスト名にフォールバックし、`doctor`が理由を表示します。
 
 ### `[database]`
 
@@ -169,7 +167,7 @@ Address:     192.0.2.10
 
 ### `[probes]`
 
-監視頻度を probe ごとに変更します。probe id をキーにしたテーブルです。
+監視頻度をprobeごとに変更します。probe idをキーにしたテーブルです。
 
 ```toml
 [probes."network.tcp"]
@@ -182,73 +180,70 @@ enabled = false
 | キー | 型 | 意味 |
 | --- | --- | --- |
 | `interval` | duration | 実行間隔 |
-| `timeout` | duration | 1 回あたりの上限時間 |
-| `max_outstanding` | 整数 | 同一 target への同時実行数（**引き下げのみ可能**） |
-| `enabled` | bool | `false` でその probe を停止 |
+| `timeout` | duration | 1回あたりの上限時間 |
+| `max_outstanding` | 整数 | 同一targetへの同時実行数（引き下げのみ可能） |
+| `enabled` | bool | `false`でそのprobeを停止 |
 
-**書かれていない probe は既定のまま動きます。** 1 つだけ調整しても他には影響しません。
+書かれていないprobeは既定のまま動きます。1つだけ調整しても他には影響しません。
 未設定のキーも同様に既定値のままです。
 
-既定値（`sentinel config init` が生成する設定ファイルにも全件書き出されます）:
+既定値（`sentinel config init`が生成する設定ファイルにも全件書き出されます）
 
-| Probe | interval | timeout | 備考 |
+| Probe | interval | タイムアウト | 備考 |
 | --- | --- | --- | --- |
-| `network.tcp` | 5s | 3s | 到達性診断の土台 |
-| `sentinel.agent` | 5s | 3s | remote のみ |
+| `network.tcp` | 5s | 3s | ホストへの到達性を確認 |
+| `sentinel.agent` | 5s | 3s | remoteのみ |
 | `systemd.unit` | 10s | 5s | |
 | `host.metrics` | 15s | 5s | |
 | `ssh.service` | 15s | 5s | |
 | `gpu.nvidia` | 15s | 10s | |
 | `nfs.server.port` | 15s | 5s | |
-| `nfs.client.mount` | 30s | 5s | `/proc` のみ |
-| `nfs.client.io` | 30s | 10s | 同時実行 1（固定） |
-| `journal.events` | 30s | 10s | 同時実行 1（固定） |
+| `nfs.client.mount` | 30s | 5s | `/proc`のみ |
+| `nfs.client.io` | 30s | 10s | 同時実行1（固定） |
+| `journal.events` | 30s | 10s | 同時実行1（固定） |
 | `nfs.server.exports` | 60s | 5s | |
 
-**`max_outstanding` は引き下げしかできません。**
-`nfs.client.io` と `journal.events` は 1 に固定されています。
-blocking syscall が積み上がらないようにするためであり
+`max_outstanding`は引き下げしかできません。
+`nfs.client.io`と`journal.events`は1に固定されています。
+blockingシステムコールが積み上がらないようにするためであり
 （`SPEC.md` §76、設計原則10）、設定ファイルで覆せません。
 
-存在しない probe id を書くと **error** になります。
-黙って無視されると「変更したつもりで変わっていない」状態になるためです。
+存在しないprobe idを書くとerrorになります。
+警告なしに無視されると「変更したつもりで変わっていない」状態になるためです。
 
-override は controller の remote probe と agent の peer probe にも同じく適用されます。
-観測者ごとに頻度が違うと、quorum が異なる頻度の観測を比較することになるためです。
+設定の上書きはcontrollerのremote probeとagentのpeer probeにも同じく適用されます。
+観測者ごとに頻度が違うと、quorumが異なる頻度の観測を比較することになるためです。
 
-`[notification]` 自体の設定:
+### `[notification]`
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
 | `min_severity` | 文字列 | `warning` | これ未満は送らない（復旧通知は常に送る） |
-| `min_interval` | duration | `1s` | **同一宛先への送信間隔の下限** |
+| `min_interval` | duration | `1s` | 同一宛先への送信間隔の下限 |
 
-**何が送られ、何が送られないか。** severity は診断の種類だけでなく
-**それに依存しているものの数**でも決まります。設定の不一致や clock skew は
-`info` のままなので既定では送られませんが、**node を drain した場合は
-`warning` になり送られます** — 計算ノードには必ず `slurmd` サービスが
-ぶら下がっており、影響範囲が 0 にならないためです。
+severityは診断の種類と依存先の数に応じて決まります。
+設定の不一致や時刻ずれは`info`のため、既定では通知しません。
+ノードをdrainした場合は、依存する`slurmd`サービスへの影響があるため、
+`warning`として通知します。
 
-drain を静かに済ませたい場合は `min_severity = "critical"` にしてください。
-逆に、些細な変化も拾いたい場合は既定のままで十分です。
+drainの通知を受け取らない場合は`min_severity = "critical"`にしてください。
+`warning`以上の通知を受け取る場合は、既定値を使います。
 
-`min_interval` は**送信を間引くのではなく、間隔を空けます。**
-1 つの障害が依存先を巻き込むと 1 回の診断で複数の通知が発生し、
-webhook は共有された rate-limited な資源です
-（Slack は概ね毎秒 1 通で、超えると 429 を返します）。
-**落とすと、落ちたのが肝心の 1 通かもしれません。**
+`min_interval`は、通知を省略せずに送信間隔を空ける設定です。
+一つの障害が複数の依存先へ影響すると、同時に複数の通知が必要になります。
+webhookの送信頻度制限を守りながら、必要な通知をすべて送るために使います。
 
-`[[notification.webhooks]]` の設定:
+#### `[[notification.webhooks]]`
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
-| `name` | 文字列 | *(必須)* | log と重複排除に使う名前 |
-| `url` | 文字列 | *(必須)* | POST 先 |
-| `format` | `generic` / `slack` | `generic` | payload の形 |
+| `name` | 文字列 | *(必須)* | ログと重複排除に使う名前 |
+| `url` | 文字列 | *(必須)* | POST先 |
+| `format` | `generic` / `slack` | `generic` | ペイロードの形 |
 
 #### `format = "slack"`
 
-Slack Block Kit で送ります。**色つきの帯・見出し・太字・整形済みの詳細**になります。
+Slack Block Kitで送ります。色つきの帯・見出し・太字・整形済みの詳細になります。
 
 ```toml
 [[notification.webhooks]]
@@ -259,24 +254,22 @@ format = "slack"
 
 | 状態 | 色 | アイコン |
 | --- | --- | --- |
-| 復旧 | 緑 | ✅ |
-| critical | 赤 | 🔴 |
-| warning | 黄 | 🟡 |
-| info | 灰 | 🔵 |
+| 復旧 | 緑 | チェックマーク |
+| critical | 赤 | 赤い丸 |
+| warning | 黄 | 黄色い丸 |
+| info | 灰 | 青い丸 |
 
-**復旧は重大度に関わらず緑**です。色が最初に伝えるべきなのは
-「始まったのか終わったのか」だからです。
+復旧通知は重大度に関係なく緑で表示し、障害の発生通知と区別します。
 
-見出しには重大度だけを置き、要約から `CRITICAL: ` のような接頭辞を外します
-（色つきの帯がすでに言っているものを繰り返すと、
-スマホで最も読まれる 1 行目を浪費するため）。
+見出しには重大度を表示します。要約からは`CRITICAL: `などの接頭辞を外し、
+1行目に診断の内容を表示します。
 
-Slack は長すぎる `header` を切り詰めずに**拒否する**ので、
+Slackは長すぎる`header`を切り詰めずに拒否するので、
 文字数はすべて上限内に収めてあります。
 
 #### 送信される内容（`format = "generic"`）
 
-`Content-Type: application/json` の POST です。
+`Content-Type: application/json`のPOSTです。
 
 ```json
 {
@@ -295,13 +288,13 @@ Slack は長すぎる `header` を切り詰めずに**拒否する**ので、
 }
 ```
 
-`text` と `content` には、全体を読める文章にしたものが入ります。
-**Slack / Microsoft Teams は `text` を、Discord は `content` を要求する**ため、
-URL を書くだけで動きます（無いと Slack は
-`missing_text_or_fallback_or_attachments` で 400 を返します）。
+`text`と`content`には、全体を読める文章にしたものが入ります。
+Slack / Microsoft Teamsは`text`を、Discordは`content`を要求するため、
+URLを書くだけで動きます（無いとSlackは
+`missing_text_or_fallback_or_attachments`で400を返します）。
 
 構造化されたフィールドはそのまま残っているので、
-severity で振り分けるような受け手はそちらを使ってください。
+severityで振り分けるような受け手はそちらを使ってください。
 
 ### `[retention]`
 
@@ -309,127 +302,121 @@ severity で振り分けるような受け手はそちらを使ってくださ�
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
-| `enabled` | bool | `true` | prune を行うか |
-| `interval` | duration | `1h` | prune の実行間隔（起動時にも 1 回実行） |
-| `observations` | period | `14d` | observation の保持期間 |
-| `keep_per_entity` | 整数 | `64` | 期間に関わらず entity ごとに残す observation 数 |
-| `transitions` | duration | `90d` | state transition の保持期間 |
-| `resolved_incidents` | period | `180d` | **解決済み** incident の保持期間 |
-| `diagnoses` | period | `30d` | どの incident にも属さない diagnosis の保持期間 |
+| `enabled` | bool | `true` | pruneを行うか |
+| `interval` | duration | `1h` | pruneの実行間隔（起動時にも1回実行） |
+| `observations` | period | `14d` | observationの保持期間 |
+| `keep_per_entity` | 整数 | `64` | 期間に関わらずentityごとに残すobservation数 |
+| `transitions` | duration | `90d` | state transitionの保持期間 |
+| `resolved_incidents` | period | `180d` | 解決済みincidentの保持期間 |
+| `diagnoses` | period | `30d` | どのincidentにも属さないdiagnosisの保持期間 |
 
-period には duration（`"14d"`、`"6h"`）のほか、
-`"never"`（`"forever"` / `"unlimited"` / `"keep"` も同義）を指定できます。
+periodにはduration（`"14d"`、`"6h"`）のほか、
+`"never"`（`"forever"` / `"unlimited"` / `"keep"`も同義）を指定できます。
 
-**なぜ class ごとに分かれているか。** バイト単価あたりの価値が違うからです。
-observation は容量の大半を占め、個々の価値は最も低い
-（昨日の TCP connect 成功 1 件は誰にも何も語りません）。
-incident は段落であり、「これは前にも起きたか」を 1 年後に確認する対象です。
+記録の用途に応じて保持期間を分けています。
+容量の大半を占めるobservationは短期間で削除し、
+障害の再発や過去の対応を調べるincidentは長期間保持します。
 
-**削除されないもの（SQL で強制、設定で緩められません）:**
+削除されないもの（SQLで強制、設定で緩められません）
 
-* **open な incident は年齢に関わらず削除されません。** 1 年開いている
-  incident は 1 年直っていない障害であり、まさに残すべきものです
-* **証拠は引用元より長生きします。** 生存している incident / diagnosis が
-  参照している observation は、保持期間を過ぎていても残ります。
-  証拠が消えた診断は誰も検証できない主張だからです（`SPEC.md` §116）
-* **各 entity は直近の observation を必ず残します**（`keep_per_entity`）。
-  これが無いと、保持期間より長く落ちている host は「見たことがある」証拠を
-  すべて失います。最長の障害ほど消えるという逆転が起きます
+* 未解決のincidentは、経過時間に関係なく残します
+* 保存されているincident / diagnosisが参照するobservationは、保持期間を過ぎても残します。
+  診断の根拠を後から確認できるようにするためです
+* 各entityの直近`keep_per_entity`件のobservationを残します。
+  保持期間より長い障害でも、最後に取得した観測結果を確認できるようにするためです
 
-`keep_per_entity` は診断が読む件数（32）を下回れません。
-下回る値を設定した場合は 32 に引き上げられ、`config check` が警告します。
+`keep_per_entity`は診断が読む件数（32）を下回れません。
+下回る値を設定した場合は32に引き上げられ、`config check`が警告します。
 
-**容量の目安。** 実測で 5 host あたり約 10 KB/s、host 1 台あたり
-1 日約 170 MB です。既定の 14 日保持なら host あたり約 2.4 GB で頭打ちになります。
+容量の目安。実測で5ホストあたり約10 KB/s、ホスト1台あたり
+1日約170 MBです。既定の14日保持ならホストあたり約2.4 GBで頭打ちになります。
 
-prune は空きページを再利用可能にしますが、ファイルサイズは縮みません。
-保持期間を下げた直後に領域を返したい場合は `sentinel prune --vacuum` を使います。
+pruneは空きページを再利用可能にしますが、ファイルサイズは縮みません。
+保持期間を下げた直後に領域を返したい場合は`sentinel prune --vacuum`を使います。
 
 ### `[tls]`
 
-controller API の転送路保護です。**すべて任意で、追加的です。**
-何も設定しなければ従来どおり平文 HTTP で動作します。
+controller APIとの通信をTLSで暗号化するための任意設定です。
+何も設定しなければ従来どおり平文HTTPで動作します。
 
-controller 側（listener）:
-
-| キー | 型 | 意味 |
-| --- | --- | --- |
-| `cert` | path | server 証明書チェーン（PEM）。設定すると TLS が有効になる |
-| `key` | path | server 秘密鍵（PEM: PKCS#8 / PKCS#1 / SEC1） |
-| `client_ca` | path | client 証明書を検証する CA（PEM）。**設定すると client 証明書は必須になります** |
-
-agent 側（client）:
+controller側（listener）
 
 | キー | 型 | 意味 |
 | --- | --- | --- |
-| `ca` | path | controller の証明書を検証する CA（PEM）。system root に**追加**されます |
-| `client_cert` | path | controller に提示する client 証明書（PEM） |
-| `client_key` | path | `client_cert` の秘密鍵（PEM） |
-| `server_name` | 文字列 | 証明書の検証に使う名前。IP で接続する場合に使う |
-| `insecure_skip_verify` | bool | 証明書を検証しない（既定 `false`） |
+| `cert` | path | サーバー証明書チェーン（PEM）。設定するとTLSが有効になる |
+| `key` | path | サーバー秘密鍵（PEM: PKCS#8 / PKCS#1 / SEC1） |
+| `client_ca` | path | クライアント証明書を検証するCA（PEM）。設定するとクライアント証明書は必須になります |
 
-**3 つの構成:**
+agent側（クライアント）
 
-1. **何も設定しない** — 平文 HTTP。隔離された管理 network では今も正しい選択です
-2. **`cert` + `key`** — TLS。agent は system root か `ca` で検証します
-3. **`cert` + `key` + `client_ca`** — mutual TLS。agent は証明書を提示しなければ
-   token を出すことすらできません。**token が漏れても耐えられる構成はこれだけです**
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `ca` | path | controllerの証明書を検証するCA（PEM）。system rootに追加されます |
+| `client_cert` | path | controllerに提示するクライアント証明書（PEM） |
+| `client_key` | path | `client_cert`の秘密鍵（PEM） |
+| `server_name` | 文字列 | 証明書の検証に使う名前。IPで接続する場合に使う |
+| `insecure_skip_verify` | bool | 証明書を検証しない（既定`false`） |
 
-`client_ca` を設定した時点で client 証明書は「任意」ではなく「必須」です。
-任意の client 認証はセキュリティのように読めて何も守りません
-（攻撃者は提示しないだけです）。
+3つの構成
 
-`insecure_skip_verify = true` は TLS を装飾に変えます。接続を横取りできる
-攻撃者は任意の証明書を提示でき、cluster credential はそのまま読まれます。
-PKI より先に cluster が立ち上がる現実のために用意してありますが、
+1. 設定なしの場合は平文HTTP。隔離された管理ネットワークで使う構成です
+2. `cert` + `key`、TLS。agentはsystem rootか`ca`で検証します
+3. `cert` + `key` + `client_ca`、mutual TLS。agentは証明書を提示しなければ
+   tokenを使った認証に進めません。tokenが漏れても耐えられる構成はこれだけです
+
+`client_ca`を設定した時点でクライアント証明書は「任意」ではなく「必須」です。
+証明書の提示を任意にすると、証明書を持たない攻撃者も接続できるためです。
+
+`insecure_skip_verify = true`はTLSで接続先の正当性を確認できなくなります。接続を横取りできる
+攻撃者は任意の証明書を提示でき、cluster credentialはそのまま読まれます。
+証明書発行の準備が整う前にクラスタを起動する場合に使えますが、
 起動のたびに警告が出ます。
 
-**証明書の自動生成機能はありません。** 監視システムが自前の trust anchor を
-発行すれば、誰も監査しない private CA が 1 つ増えるだけです。
-TLS を要求する現場には、既に証明書を発行する手段があります。
+証明書の自動生成機能はありません。CAの管理と監査はSentinelとは別に行い、
+既存の証明書発行手順を使ってください。
 
 ### `[peer_monitoring]`
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
-| `degree` | 整数 | `3` | 1 entity あたりに割り当てる observer 数 |
+| `degree` | 整数 | `3` | 1 entityあたりに割り当てるobserver数 |
 
-`degree = 0` は peer monitoring を無効化し、警告されます。
-第 2 の視点が無い場合、controller 自身の network path 上の障害と
-host の死を区別できなくなるためです。
+`degree = 0`はpeer monitoringを無効化し、警告されます。
+第2の観測元が無い場合、controller自身の通信経路上の障害と
+ホスト全体の障害を区別できなくなるためです。
 
 ### `[discovery.slurm]`
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | Slurm discovery を実行するか |
-| `scontrol_path` | path | *(`PATH` から解決)* | `scontrol` の場所 |
+| `enabled` | bool | `false` | Slurm自動検出を実行するか |
+| `scontrol_path` | path | *(`PATH`から解決)* | `scontrol`の場所 |
 
-Slurm は複数ある inventory provider のうちの 1 つです。
-Slurm 外の host も一級市民として扱われます。
+Slurmは、監視対象一覧を作るための情報源の一つです。
+Slurmに登録されていないホストも、同じ仕組みで登録・監視できます。
 
 ### `[discovery.nfs]`
 
 | キー | 型 | 既定値 | 意味 |
 | --- | --- | --- | --- |
-| `enabled` | bool | `true` | NFS の依存関係を agent の報告から導出するか |
+| `enabled` | bool | `true` | NFSの依存関係をagentの報告から導出するか |
 
-**既定で有効です。** agent が報告するマウント表から、fileserver の
-host entity、storage entity、`provides`、`uses_storage` が自動で作られます。
-`[[dependencies]]` に NFS のマウント関係を書く必要はありません。
+既定で有効です。agentが報告するマウント表から、ファイルサーバーの
+host entity、storage entity、`provides`、`uses_storage`が自動で作られます。
+`[[dependencies]]`にNFSのマウント関係を書く必要はありません。
 
-導出された内容は `sentinel dependency list` で確認できます。
+導出された内容は`sentinel dependency list`で確認できます。
 
-address でマウントされていて、その address を持つ host が未知の場合、
-entity を捏造せずに `sentinel discover` が報告します
-（address は identity ではないため。[ADR 0001](adr/0001-deterministic-entity-identity.md)）。
+アドレスでマウントされていて、そのアドレスを持つホストが未知の場合、
+entityを作成せず、`sentinel discover`で報告します
+（アドレスはidentityではないため。[ADR 0001](adr/0001-deterministic-entity-identity.md)）。
 
 手で書いた宣言は導出結果と併存します。打ち消し合いません。
-詳細と例外は [DEPLOYMENT.md §9.9](DEPLOYMENT.md#99-ストレージ構成は書かなくてよい例外は-3-つ)。
+詳細と例外は [DEPLOYMENT.md §9.9](DEPLOYMENT.md#99-ストレージ構成は書かなくてよい例外は3つ)。
 
 ### `[capabilities]`
 
-Capability 名をキーとする運用者による上書き。
+Capability名をキーとする運用者による上書き。
 
 ```toml
 [capabilities]
@@ -438,7 +425,7 @@ Capability 名をキーとする運用者による上書き。
 "storage.zfs"        = "enable"   # discovery が何も言わなかった場合に ON
 ```
 
-解決順序（強い順）:
+解決順序（強い順）
 
 ```text
 disable  >  force  >  runtime discovery  >  enable / role hint
@@ -446,7 +433,7 @@ disable  >  force  >  runtime discovery  >  enable / role hint
 
 ### `[[entities]]`
 
-まだ agent が入っていない、あるいはどの integration も発見しない entity を宣言します。
+まだagentが入っていない、あるいはどの連携機能も発見しないentityを宣言します。
 
 ```toml
 [[entities]]
@@ -461,18 +448,18 @@ type = "storage"
 name = "shared-a"
 ```
 
-`type` は `host` / `service` / `storage` / `scheduler` / `external_dependency` のいずれか。
+`type`は`host` / `service` / `storage` / `scheduler` / `external_dependency`のいずれか。
 
-`name` は canonical name であり、`(environment, type)` 内で一意です。
-address と port は到達性のためのデータであり identity ではありません
-— 1 entity が複数 address を持てますし、port を変えても同じ entity です。
+`name`は正式名であり、`(environment, type)`内で一意です。
+アドレスとポートは接続先を示す情報で、entityの識別キーには使いません。
+一つのentityが複数のアドレスを持てます。ポートを変更してもentityの識別子は変わりません。
 
-`display_name` は表示にのみ使う別名です。省略すると `name` が使われます。
-`cluster` は複数クラスタを 1 つの environment で扱うときのグループ名で、
-どちらも **probe を有効にしません**（capability だけが probe を決めます）。
+`display_name`は表示にのみ使う別名です。省略すると`name`が使われます。
+`cluster`は複数クラスタを1つのenvironmentで扱うときのグループ名で、
+どちらもprobeを有効にしません（capabilityだけがprobeを決めます）。
 
-`ports` は **agent がいない host** に必要です。
-agent がいる host は自分でポートを報告します。
+`ports`はagentがいないホストに必要です。
+agentがいるホストは自分でポートを報告します。
 
 ```toml
 [[entities]]
@@ -483,16 +470,16 @@ ports = { ssh = 2222, agent = 9444 }
 ```
 
 指定しない場合は既定値（ssh 22 / agent 7444 / nfs 2049）が使われます。
-SSH を 22 以外で運用しているクラスタでこれを書き忘れると、
-probe が閉じたポートを叩き、**全 host が SSH 障害として報告されます。**
+SSHを22以外で運用しているクラスタでこれを書き忘れると、
+probeが実際のSSHポートへ接続できず、正常なSSHサービスを障害として報告します。
 
 ### `[[dependencies]]`
 
-> **NFS については書く必要がありません。** マウント関係は agent の報告から
-> 自動で導出されます（`[discovery.nfs]`）。ここに書くのは、NFS 以外の
+> NFSについては書く必要がありません。マウント関係はagentの報告から
+> 自動で導出されます（`[discovery.nfs]`）。ここに書くのは、NFS以外の
 > 共有ストレージや、導出できなかったものだけです。
 
-`from` が `to` に依存します。両者とも `type/name` 形式で記述します。
+`from`が`to`に依存します。両者とも`type/name`形式で記述します。
 
 ```toml
 [[dependencies]]
@@ -507,24 +494,24 @@ to = "host/fileserver-a"
 type = "provides"
 ```
 
-`type` は `depends_on` / `hosted_on` / `provides` / `uses_storage` /
+`type`は`depends_on` / `hosted_on` / `provides` / `uses_storage` /
 `uses_scheduler` / `network_reaches` / `observes`、
-または integration 固有の任意文字列。
+または連携機能固有の任意文字列。
 
-`criticality` は `critical` / `important` / `optional`。
-`optional` の edge は障害を伝播しません。
+`criticality`は`critical` / `important` / `optional`。
+`optional`のedgeは障害を伝播しません。
 
-ここで宣言していない entity を参照することは error ではなく warning です。
-Slurm discovery や agent registration から正当に到着し得るためです。
+ここで宣言していないentityを参照することはerrorではなくwarningです。
+Slurm自動検出やagent registrationから正当に到着し得るためです。
 
-cycle は許可されます。実際の依存グラフには cycle が存在します。
+閉路は許可されます。実際の依存グラフには閉路が存在します。
 
 ## 既定パス
 
 | パス | 内容 |
 | --- | --- |
 | `/etc/sentinel/config.toml` | 設定 |
-| `/var/lib/sentinel/` | database と spool |
+| `/var/lib/sentinel/` | databaseとspool |
 | `/run/sentinel/` | runtime state |
 
-ログは stderr へ出力されます。systemd 配下では journal に入ります。
+ログはstderrへ出力されます。systemd配下ではjournalに入ります。

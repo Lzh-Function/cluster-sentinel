@@ -1,5 +1,5 @@
 分散クラスタの監視・障害検知・原因診断システムです。
-成果物は **単一バイナリ 1 つ**で、controller・agent・CLI をすべて兼ねます。
+成果物は単一バイナリ1つで、controller・agent・CLIをすべて兼ねます。
 
 ## ダウンロード
 
@@ -8,8 +8,8 @@
 | `sentinel-x86_64-unknown-linux-musl` | x86_64 |
 | `sentinel-aarch64-unknown-linux-musl` | ARM64 |
 
-**静的リンク**なので、glibc のバージョンに関係なくどのディストリビューションでも動きます。
-同一アーキテクチャなら全 host に同じファイルを配れます。
+静的リンクなので、glibcのバージョンに関係なくどのディストリビューションでも動きます。
+同一アーキテクチャなら全ホストに同じファイルを配れます。
 
 ```bash
 sha256sum -c sentinel-x86_64-unknown-linux-musl.sha256
@@ -17,9 +17,9 @@ sudo install -m 0755 sentinel-x86_64-unknown-linux-musl /usr/local/bin/sentinel
 sentinel version
 ```
 
-## v0.3.13 での追加
+## v0.3.13での追加
 
-**`sentinel explain`** — この仕組みを作っていない人が読むためのコマンドです。
+`sentinel explain`、この仕組みを作っていない人が読むためのコマンドです。
 
 ```bash
 sentinel explain capabilities    # 何が probe を有効にし、どう判定されるか
@@ -27,9 +27,9 @@ sentinel explain probes          # 各 probe が実際に何を実行するか
 sentinel explain paths           # どの host を誰が、何で監視しているか
 ```
 
-`status` は「何を結論したか」を言いますが、「それがどうやって分かるのか」は
+`status`は「何を結論したか」を言いますが、「それがどうやって分かるのか」は
 これまでどこにも出ていませんでした。根拠を確かめられない監視は、
-信じるしかない監視であり、誰にも訂正できません。
+運用者が診断の正誤を確認できません。
 
 ```
 systemd
@@ -46,23 +46,23 @@ compute02
   watched by   node03 (SameDomain), fs02 (Independent), node01 (Filler)
 ```
 
-## v0.3.12 での追加
+## v0.3.12での追加
 
-**`[notification] min_interval`**（既定 `1s`）。同一宛先への送信間隔の下限です。
+`[notification] min_interval`（既定`1s`）。同一宛先への送信間隔の下限です。
 
-1 つの障害が依存先を巻き込むと、1 回の診断で複数の通知が発生します。
-webhook は共有された rate-limited な資源で、Slack は概ね毎秒 1 通、
-超えると 429 を返します。**間引くのではなく間隔を空けます**——
-落とすと、落ちたのが肝心の 1 通かもしれないからです。
+1つの障害が複数の依存先に影響すると、1回の診断で複数の通知が発生します。
+webhookは共有されたrate-limitedな資源で、Slackは概ね毎秒1通、
+超えると429を返します。通知は削減せず、間隔を空けて送信します。
+送信数を減らすと、必要な障害通知を失う可能性があるためです。
 
 ```toml
 [notification]
 min_interval = "1s"
 ```
 
-## v0.3.11 での追加
+## v0.3.11での追加
 
-**Slack 向けの整形**（`format = "slack"`）。
+Slack向けの整形（`format = "slack"`）。
 
 ```toml
 [[notification.webhooks]]
@@ -72,41 +72,41 @@ format = "slack"
 ```
 
 色つきの帯・見出し・太字・整形済みの詳細で届きます。
-復旧は緑（重大度に関わらず）、critical は赤、warning は黄。
-色が最初に伝えるべきなのは「始まったのか終わったのか」だからです。
+復旧は緑（重大度に関わらず）、criticalは赤、warningは黄。
+復旧通知を障害発生の通知と区別できるようにしています。
 
-既定は `generic` のままなので、既存の宛先の挙動は変わりません。
+既定は`generic`のままなので、既存の宛先の挙動は変わりません。
 
-## v0.3.10 での修正
+## v0.3.10での修正
 
-**Slack への通知が 400 で弾かれていました。**
+Slackへの通知が400で弾かれていました。
 
-Slack の incoming webhook は `text`（または `blocks` / `attachments`）を要求し、
-無ければ `missing_text_or_fallback_or_attachments` を返します。
-汎用 JSON をそのまま送っていたため、**Slack を宛先にしている場合、
-通知は 1 件も届いていません。**
+Slackのincoming webhookは`text`（または`blocks` / `attachments`）を要求し、
+無ければ`missing_text_or_fallback_or_attachments`を返します。
+汎用JSONをそのまま送っていたため、Slackを宛先にしている場合、
+通知は1件も届いていません。
 
-payload に `text`（Slack / Teams）と `content`（Discord）を追加しました。
-URL を書くだけで動きます。構造化フィールドはそのまま残っています。
+ペイロードに`text`（Slack / Teams）と`content`（Discord）を追加しました。
+URLを書くだけで動きます。構造化フィールドはそのまま残っています。
 
-## v0.3.9 での修正
+## v0.3.9での修正
 
-**incident が開いても通知されないことがありました。**
+incidentが開いても通知されないことがありました。
 
-correlation が discovery ループと診断ループの両方で走っており、
+correlationが自動検出ループと診断ループの両方で走っており、
 通知を送るのは後者だけでした。先に走ったほうが「開いた」という事実を
-消費するため、**discovery cycle で開かれた incident は記録されるだけで
-一度も通知されません。**
+消費するため、自動検出ループで開かれたincidentは記録されるだけで
+一度も通知されません。
 
-discovery は既定で 5 分ごと、診断は 15 秒ごとなので、両者が重なった
-タイミングの障害だけが静かに落ちます。**非決定的な通知漏れで、
-動いているように見えるぶん通知が無いより悪い**種類の不具合です。
+自動検出は既定で5分ごと、診断は15秒ごとなので、両者が重なった
+タイミングの障害だけが通知されないままになります。
+両ループの実行順に依存するため、常に再現するわけではありませんでした。
 
-incident を開く場所を診断ループの 1 箇所に統一しました。
+incidentを開く場所を診断ループの1箇所に統一しました。
 
-## v0.3.8 での追加
+## v0.3.8での追加
 
-**`sentinel notify test`** — 設定した通知先に届くかを、障害を待たずに確認できます。
+`sentinel notify test`、設定した通知先に届くかを、障害を待たずに確認できます。
 
 ```bash
 sudo -u sentinel sentinel notify test
@@ -119,124 +119,124 @@ broken               FAILED: cannot reach http://... : error sending request
 1 of 2 destination(s) failed.
 ```
 
-incident も database も重複排除も触りません。「この controller が叫ぶべき相手に
-届くか」だけを答えます。URL の打ち間違いを障害の最中に知るのが最悪なので。
+incidentもdatabaseも重複排除も触りません。「このcontrollerが設定した通知先に
+届くか」を確認します。障害が起きる前に、URLや通信上の問題を検出できます。
 
-## v0.3.7 での修正
+## v0.3.7での修正
 
-**service entity を誰も観測していませんでした。**
+サービスentityを誰も観測していませんでした。
 
-`slurmd@<node>` は inventory に存在するのに probe が 1 つも向いておらず、
-実クラスタで **31 entity 中 13 が永久に UNKNOWN** でした。
+`slurmd@<node>`は監視対象一覧に存在するのにprobeが1つも向いておらず、
+実クラスタで31 entity中13が永久にUNKNOWNでした。
 
-unit の状態を systemd に訊くのはそのマシン上でしかできない問いなので、
-controller は肩代わりできません。そして agent は自分の host についての
-probe しかスケジュールしていませんでした。
+unitの状態をsystemdに訊くのはそのマシン上でしかできない問いなので、
+controllerは肩代わりできません。そしてagentは自分のホストについての
+probeしかスケジュールしていませんでした。
 
-agent が、自分の capability が示す unit を監視するようにしました。
-**観測は service entity に帰属します**（host に混ぜると、
-「デーモンが死んだ」と「マシンが死んだ」の区別が消えるため）。
+agentが、自分のcapabilityが示すunitを監視するようにしました。
+観測はサービスentityに帰属します（ホストに混ぜると、
+「デーモンが停止した」と「ホスト全体が到達不能になった」の区別が消えるため）。
 
-## v0.3.6 での修正
+## v0.3.6での修正
 
-**agent が自分の sandbox の mount table を読んでいました。**
+agentが自分のsandboxのマウント表を読んでいました。
 
-生成される systemd unit の `ProtectSystem=strict` により、サービスは
-ファイルシステム全体が read-only に再マウントされた専用 namespace で動きます。
-probe が読んでいた `/proc/self/mounts` はその内側の姿なので、
-**書き込み可能な NFS 共有が全ノードで read-only と報告されます。**
+生成されるsystemd unitの`ProtectSystem=strict`により、サービスは
+ファイルシステム全体が読み取り専用に再マウントされた専用namespaceで動きます。
+probeが読んでいた`/proc/self/mounts`はそのnamespace内のマウント状態なので、
+書き込み可能なNFS共有が全ノードで読み取り専用と報告されます。
 
-ホストの mount table（`/proc/1/mounts`）を読むよう修正しました。
-v0.3.5 以前を使っている場合、NFS mount の状態は信用できません。
+ホストのマウント表（`/proc/1/mounts`）を読むよう修正しました。
+v0.3.5以前を使っている場合、NFS mountの状態は信用できません。
 
-## v0.3.5 での修正
+## v0.3.5での修正
 
-**実クラスタで見つかった誤検知 2 件です。バイナリの更新が必要です。**
+実クラスタで見つかった誤検知2件です。バイナリの更新が必要です。
 
-* **到達性 probe が SSH ポートを無視して 22 番に固定されていました。**
-  SSH を 22 以外に移し、22 番を firewall で DROP している環境では、
-  **健全な host が到達不能と報告されます。**
-  22 番が REJECT を返す host だけが到達可能と判定され、
+* 到達性probeがSSHポートを無視して22番に固定されていました。
+  SSHを22以外に移し、22番をfirewallでDROPしている環境では、
+  健全なホストが到達不能と報告されます。
+  22番がREJECTを返すホストだけが到達可能と判定され、
   同じクラスタ内で結果が割れていました。
-  agent が `sshd_config` から検出して報告する `ports.ssh` を優先します。
-* **read-only な NFS mount を劣化と判定していました。**
-  `ro` は「読み取り専用である」ことしか示さず、意図的な ro 共有を
-  常時 DEGRADED と報告していました。事実として記録するだけにしました
-  （本当に kernel が落とした場合は journal probe が捉えます）。
-* `sentinel` ユーザーを `systemd-journal` group に入れる案内を追加。
-  無いと `journal.events` が UNSUPPORTED になり、kernel event が
+  agentが`sshd_config`から検出して報告する`ports.ssh`を優先します。
+* 読み取り専用なNFS mountを劣化と判定していました。
+  `ro`は「読み取り専用である」ことしか示さず、意図的なro共有を
+  常時DEGRADEDと報告していました。事実として記録するだけにしました
+  （カーネルが読み取り専用へ変更した場合はjournal probeが捉えます）。
+* `sentinel`ユーザーを`systemd-journal` groupに入れる案内を追加。
+  無いと`journal.events`がUNSUPPORTEDになり、カーネルイベントが
   一切収集されません。
-* firewall で開けるポート（SSH のポート、7444、7443）を文書化。
+* firewallで開けるポート（SSHのポート、7444、7443）を文書化。
 
-## v0.3.4 での変更
+## v0.3.4での変更
 
-**Ansible ロールのみの変更です。バイナリに変更はありません。**
-`deploy/ansible/` を使っている場合は `git pull` してください。
+Ansibleロールのみの変更です。バイナリに変更はありません。
+`deploy/ansible/`を使っている場合は`git pull`してください。
 
-* **controller の `config.toml` が唯一の出所になりました。**
-  `environment`・`[probes]`（監視頻度）・`[tls]` の client 側・待ち受けポートを
-  ロールが controller から読み取って各ノードへ配ります。
-  監視頻度の変更は controller 1 箇所の編集で済みます。
-* **credential が 0750 になっていました**（修正）。
-  再帰的な `file` タスクがディレクトリ用のモードをファイルにも適用し、
-  0400 で書いた token を group 読み取り可能にしていました。
-* **毎回バイナリを再ダウンロードしていました**（修正）。
-* **`-e sentinel_observer=false` が observer を有効にしていました**（修正）。
-* **controller に対して実行すると設定を破壊していました**（実行を拒否するよう修正）。
+* 各ノードへ配る共通設定を、controllerの`config.toml`から取得するようになりました。
+  `environment`・`[probes]`（監視頻度）・`[tls]`のクライアント側・待ち受けポートを
+  ロールがcontrollerから読み取って各ノードへ配ります。
+  監視頻度の変更はcontroller 1箇所の編集で済みます。
+* credentialが0750になっていました（修正）。
+  再帰的な`file`タスクがディレクトリ用のモードをファイルにも適用し、
+  0400で書いたtokenをgroup読み取り可能にしていました。
+* 毎回バイナリを再ダウンロードしていました（修正）。
+* `-e sentinel_observer=false`がobserverを有効にしていました（修正）。
+* controllerに対して実行すると設定を上書きしていました（実行を拒否するよう修正）。
 
-## v0.3.3 での変更
+## v0.3.3での変更
 
-**切り分け用のコマンドが増えました。**
+切り分け用のコマンドが増えました。
 
 ```bash
 sentinel entity observations <name>            # 誰が何を見たか
 sentinel entity observations <name> --probe network.tcp --limit 100
 ```
 
-state や diagnosis ではなく、**生の観測**を表示します。
-時刻 / probe / **observer** / status / アドレスと失敗理由。
-「SSH は通るのに到達不能」のような一見矛盾した状態は、
-観測者ごとに結果が違うだけであることが多く、observer 列で判別できます。
+stateやdiagnosisではなく、生の観測を表示します。
+時刻 / probe / observer / status / アドレスと失敗理由。
+「SSHは通るのに到達不能」のような一見矛盾した状態は、
+観測者ごとに結果が違うだけであることが多く、observer列で判別できます。
 
-* `entity show` が probe 先アドレスと、その決まり方
-  （agent の報告か、entity 名からの解決か）を表示します。
-* `doctor` の credential 判定が環境変数しか見ておらず、
-  正常な host でも `NOT CONFIGURED` と表示されていました。
-* **Ansible ロールが v0.3.0 を配っていました**（`sentinel_version` の更新漏れ）。
-  リポジトリの版と一致していないとテストが落ちるようにしました。
+* `entity show`がprobe先アドレスと、その決まり方
+  （agentの報告か、entity名からの解決か）を表示します。
+* `doctor`のcredential判定が環境変数しか見ておらず、
+  正常なホストでも`NOT CONFIGURED`と表示されていました。
+* Ansibleロールがv0.3.0を配っていました（`sentinel_version`の更新漏れ）。
+  リポジトリの版と一致していなければ、テストが失敗するようにしました。
 
-## v0.3.2 での修正
+## v0.3.2での修正
 
-* **`sentinel install --force` が cluster credential を上書きしなくなりました。**
-  `--force` を実行する理由は、多くの場合 systemd unit の更新を取り込むことです。
-  それが credential を再生成していたため、**アップグレードのつもりで実行すると
-  全 agent が一斉に締め出されていました。** 失敗は後から各ノードの認証エラーとして
+* `sentinel install --force`がcluster credentialを上書きしなくなりました。
+  `--force`を実行する理由は、多くの場合systemd unitの更新を取り込むことです。
+  それがcredentialを再生成していたため、アップグレードのつもりで実行すると
+  全agentが一斉に締め出されていました。失敗は後から各ノードの認証エラーとして
   現れるため、原因に辿り着きにくい形でした。
-  意図的な更新は、ファイルを削除して `install` を実行し、全 host に配り直します。
-* アップグレード手順を [OPERATIONS.md](docs/OPERATIONS.md) に具体化しました
-  （置き換え前の `config check`、controller → agent の順序、
-  unit が変わった場合、切り戻し）。
-* Ansible ロールが SSH / `sudo` のパスワード認証環境で動くようになりました。
+  意図的な更新は、ファイルを削除して`install`を実行し、全ホストに配り直します。
+* アップグレード手順を [OPERATIONS.md](../docs/OPERATIONS.md) に具体化しました
+  （置き換え前の`config check`、controller → agentの順序、
+  unitが変わった場合、切り戻し）。
+* AnsibleロールがSSH / `sudo`のパスワード認証環境で動くようになりました。
 
-## v0.3.1 での修正
+## v0.3.1での修正
 
-**v0.3.0 には、実機で問題になる不具合が含まれています。更新を推奨します。**
+v0.3.0には、実機で問題になる不具合が含まれています。更新を推奨します。
 
-* **到達性 probe が 1 つも動いていませんでした。** Slurm discovery で見つかった
-  host は `slurm.compute` capability しか持たないため、`network.tcp` を
-  要求していた reachability probe が全て skip されていました。
-  結果、**誰も接触していない host が HEALTHY と表示されます**。
-* **報告アドレスの選択。** loopback インターフェース上のアドレスを除外し、
-  物理 NIC を仮想 NIC より優先。NIC が複数ある場合は「曖昧である」と報告します
-  （`[agent] interface` で指定してください）。
-* systemd unit が `StateDirectory=` を持つため、`/var/lib/sentinel` の
+* 到達性probeが1つも動いていませんでした。Slurm自動検出で見つかった
+  ホストは`slurm.compute` capabilityしか持たないため、`network.tcp`を
+  要求していたreachability probeが全てskipされていました。
+  結果、誰も接触していないホストがHEALTHYと表示されます。
+* 報告アドレスの選択。loopbackインターフェース上のアドレスを除外し、
+  物理NICを仮想NICより優先。NICが複数ある場合は「曖昧である」と報告します
+  （`[agent] interface`で指定してください）。
+* systemd unitが`StateDirectory=`を持つため、`/var/lib/sentinel`の
   手動作成が不要になりました。
-* ダウンロードしたディレクトリのまま `install` すると、unit が
+* ダウンロードしたディレクトリのまま`install`すると、unitが
   消えるパスを指してしまう問題を警告するようになりました。
-* 設定ファイルの `Permission denied` が、正しい実行方法を案内します。
-* `install` が `scontrol` の有無を見て Slurm discovery を設定します。
+* 設定ファイルの`Permission denied`が、正しい実行方法を案内します。
+* `install`が`scontrol`の有無を見てSlurm自動検出を設定します。
 
-ノードが多い場合は [Ansible ロール](deploy/ansible/) を使ってください。
+ノードが多い場合は [Ansible ロール](../deploy/ansible/) を使ってください。
 
 ## 導入
 
@@ -244,45 +244,45 @@ state や diagnosis ではなく、**生の観測**を表示します。
 sudo sentinel install controller   # または agent
 ```
 
-設定ファイル・systemd unit・cluster credential が生成されます。
-書き換えが必要なのは `CHANGE-ME` を含む行だけです
-（controller は 1 行、agent は 2 行）。
+設定ファイル・systemd unit・cluster credentialが生成されます。
+書き換えが必要なのは`CHANGE-ME`を含む行だけです
+（controllerは1行、agentは2行）。
 
-**NIC が複数ある環境では、各 host で `sentinel doctor` を 1 回確認してください。**
-どの NIC でクラスタ内通信をしているかは自動判別できないため、
-候補が複数ある場合はその旨が表示されます。`[agent] interface` で指定します。
+NICが複数ある環境では、各ホストで`sentinel doctor`を1回確認してください。
+どのNICでクラスタ内通信をしているかは自動判別できないため、
+候補が複数ある場合はその旨が表示されます。`[agent] interface`で指定します。
 
-手順の全体は [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) にあります。
+手順の全体は [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) にあります。
 
 ## 何ができるか
 
 単一の観測点からは区別できない障害を、複数の観測者の合意と依存グラフから切り分けます。
 
-* host の死 / 経路だけの障害 / SSH だけの障害 / agent だけの障害 / slurmd だけの障害
-* Slurm の DRAIN・DOWN と、host 自体の障害
-* Slurm control plane の障害
-* NFS server の障害 / client 側だけの障害 / 共有ストレージ起因の多ノード障害
-* GPU のリソース設定不一致
-* kernel event（OOM・I/O error・hung task・NVMe timeout・GPU Xid など）の継続収集
+* ホスト全体の障害 / 経路だけの障害 / SSHだけの障害 / agentだけの障害 / slurmdだけの障害
+* SlurmのDRAIN・DOWNと、ホスト自体の障害
+* Slurm制御系の障害
+* NFSサーバーの障害 / クライアント側だけの障害 / 共有ストレージ起因の多ノード障害
+* GPUのリソース設定不一致
+* カーネルイベント（OOM・I/O error・hung task・NVMeタイムアウト・GPU Xidなど）の継続収集
 
 ## 設計上の約束
 
-* **単一の観測者の失敗から host の死を結論しません。** 独立した 2 つ以上の合意が必要です
-* **BMC/IPMI の証拠なしに電源断とは言いません**
-* **自動復旧を一切行いません。** reboot も restart も `scontrol update` もしません
-* **リモート実行の口がありません。** SSH はバナーを読むだけで、鍵もパスワードも持ちません
-* **診断に LLM を使いません**
-* core に hostname・IP・Slurm パーティション・NFS 構成をハードコードしていません
+* 単一の観測者の失敗からホスト全体の障害を結論しません。独立した2つ以上の合意が必要です
+* BMC/IPMIの証拠なしに電源断とは言いません
+* 自動復旧を一切行いません。再起動もrestartも`scontrol update`もしません
+* 任意のコマンドを遠隔実行する機能はありません。SSHはバナーを読むだけで、鍵もパスワードも持ちません
+* 診断にLLMを使いません
+* coreにhostname・IP・Slurmパーティション・NFS構成をハードコードしていません
 
 ## この版で検証していないもの
 
-Docker 疑似クラスタで実 Slurm を動かした受け入れ 23 項目は通っていますが、
-以下は**実機での検証が必要**です（[docs/VM_VALIDATION.md](docs/VM_VALIDATION.md)）。
+Docker疑似クラスタで実Slurmを動かした受け入れ23項目は通っていますが、
+以下は実機での検証が必要です（[docs/VM_VALIDATION.md](../docs/VM_VALIDATION.md)）。
 
-* reboot をまたぐ boot ID の変化
-* NFS hard mount 時の kernel D-state
-* 実 GPU
-* `journal.events` probe（container に systemd が無いため疑似クラスタでは動きません）
-* TLS の実運用（protocol 部分は検証済み）
+* 再起動をまたぐboot IDの変化
+* NFS hard mount時のkernel D-state
+* 実GPU
+* `journal.events` probe（コンテナにsystemdが無いため疑似クラスタでは動きません）
+* TLSの実運用（protocol部分は検証済み）
 
-controller の HA、リモート読み取り API、per-node credential は範囲外です。
+controllerのHA、リモート読み取りAPI、per-node credentialは範囲外です。

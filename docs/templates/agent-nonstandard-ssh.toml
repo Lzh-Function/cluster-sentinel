@@ -1,19 +1,19 @@
-# Cluster Sentinel — agent（SSH が 22 以外の場合）
+# Cluster Sentinel、agent（SSHが22以外の場合）
 #
 # 配置先: /etc/sentinel/config.toml
 #
-# 通常はこのファイルは不要です。agent は /etc/ssh/sshd_config の
-# `Port` および `ListenAddress host:port` を読んで自動検出します。
+# 通常はこのファイルは不要です。agentは /etc/ssh/sshd_configの
+# `Port`および`ListenAddress host:port`を読んで自動検出します。
 #
 # 明示が必要なのは次の場合だけです。
-#   * sshd_config が読めない（権限、または別パス）
-#   * ポートが sshd_config 以外の場所で設定されている
-#     （systemd socket activation、include されたファイル等）
+#   * sshd_configが読めない（権限、または別パス）
+#   * ポートがsshd_config以外の場所で設定されている
+#     （systemd socket activation、includeされたファイル等）
 #
-# 優先順位:  [agent] ssh_port  >  sshd_config の Port  >  既定値 22
+# 優先順位:  [agent] ssh_port  >  sshd_configのPort  >  既定値22
 #
-# 設定しないまま SSH が 22 以外だと、probe が閉じたポートを叩き、
-# **全 host が SSH 障害として報告されます。**
+# 実際のSSHポートを自動検出できず、明示的な設定もない場合は、
+# probeが22番へ接続し、正常なSSHサービスを障害として報告します。
 
 config_version = 1
 environment = "CHANGE-ME-environment"

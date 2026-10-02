@@ -1,54 +1,54 @@
-# Cluster Sentinel — agent
+# Cluster Sentinel、agent
 #
-# 配置先: /etc/sentinel/config.toml（監視対象の各 host）
+# 配置先: /etc/sentinel/config.toml（監視対象の各ホスト）
 # 検証:   sudo -u sentinel sentinel config check
 #
-# 全 agent host で同じ内容にできます。
-# capability は agent が自動検出するため、列挙する必要はありません。
+# 全agentホストで同じ内容にできます。
+# capabilityはagentが自動検出するため、列挙する必要はありません。
 
 config_version = 1
 
-# controller の environment と一致させること。
+# controllerのenvironmentと一致させること。
 environment = "CHANGE-ME-environment"
 
 [agent]
 controller_address = "CHANGE-ME-controller-host:7443"
 spool_path = "/var/lib/sentinel/spool.db"
 
-# health endpoint。peer がここを見て
-# 「agent だけ落ちた」と「host が落ちた」を区別します。
-# 変更した場合、agent が自分で controller に報告するため
-# controller 側への追記は不要です。
+# health endpoint。peerがここを見て
+# agentのみの停止とホスト全体の停止を区別します。
+# 変更した場合、agentが自分でcontrollerに報告するため
+# controller側への追記は不要です。
 listen = "0.0.0.0:7444"
 
 # ---------------------------------------------------------------------------
-# peer がこの host に到達するアドレス
+# peerがこのホストに到達するアドレス
 #
-# 未指定なら自動検出しますが、「どの NIC でクラスタ内通信をしているか」は
-# site の事実であり、host を調べても分かりません。
-# VLAN や bridge、複数 fabric がある環境では **必ず指定してください。**
+# 未指定なら自動検出しますが、「どのNICでクラスタ内通信をしているか」は
+# クラスタ内の構成によって決まるため、ホストの情報だけでは判別できません。
+# VLANやbridge、複数fabricがある環境では必ず指定してください。
 #
-# `sentinel doctor` で、報告されるアドレスと候補を確認できます。
+# `sentinel doctor`で、報告されるアドレスと候補を確認できます。
 # ---------------------------------------------------------------------------
-# interface = "vlan20"          # NIC 名（fleet で同じ 1 行が使える）
-# address   = "192.0.2.20"    # 直接指定（NAT 越しなど）
+# interface = "vlan20"          # NIC名（全ノードで同じ1行が使える）
+# address   = "192.0.2.20"    # 直接指定（NAT越しなど）
 
-# SSH が 22 以外で、かつ /etc/ssh/sshd_config から読めない場合のみ指定。
-# 通常は agent が sshd_config から自動検出します。
+# SSHが22以外で、かつ /etc/ssh/sshd_configから読めない場合のみ指定。
+# 通常はagentがsshd_configから自動検出します。
 # ssh_port = 2222
 
-# UI 上のグループ分けと既定値の提示にのみ使われます。
-# probe を有効化することはありません。
+# UI上のグループ分けと既定値の提示にのみ使われます。
+# probeを有効化することはありません。
 roles = ["compute"]
 
 
 # ===========================================================================
-# この host を peer observer にする場合
+# このホストをpeer observerにする場合
 #
-# observer は互いに異なる障害ドメインから選んでください。
-# 同じ storage の背後にいる 3 台は、視点 1 つを 3 回数えているだけです。
+# observerは互いに異なる障害ドメインから選んでください。
+# 同じストレージを使う3台は、そのストレージの障害で同時に影響を受けるためです。
 #
-# observer が 1 台以下の entity については、
+# observerが1台以下のentityについては、
 # 到達性の診断が一切行われません。
 # ===========================================================================
 [capabilities]
@@ -56,22 +56,22 @@ roles = ["compute"]
 
 
 # ===========================================================================
-# TLS（agent 側）
+# TLS（agent側）
 #
-# ここに 1 つでも設定があると、controller_address の "host:port" は
+# ここに1つでも設定があると、controller_addressの "ホスト:ポート" は
 # https:// として解釈されます。
 #
-# 手順は docs/DEPLOYMENT.md §9.6 を参照。
+# 手順はdocs/DEPLOYMENT.md §9.6を参照。
 # ===========================================================================
 # [tls]
 # ca = "/etc/sentinel/tls/ca.crt"
 #
-# mutual TLS の場合。証明書は host ごとに発行してください。
+# mutual TLSの場合。証明書はホストごとに発行してください。
 # client_cert = "/etc/sentinel/tls/agent.crt"
 # client_key  = "/etc/sentinel/tls/agent.key"
 #
-# IP で接続し、証明書は名前しか持たない場合。
+# IPで接続し、証明書は名前しか持たない場合。
 # server_name = "CHANGE-ME-controller-host"
 #
-# PKI がまだ無い場合の暫定措置。TLS を装飾に変えます。
+# PKIがまだ無い場合の暫定措置。TLSで接続先の正当性を確認できなくなります。
 # insecure_skip_verify = true

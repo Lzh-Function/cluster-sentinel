@@ -1,19 +1,19 @@
 # 実クラスタ導入マニュアル
 
-実際の計算クラスタへ Cluster Sentinel を導入する手順書です。
-**網羅性を優先しているので長くなっています。**
+実際の計算クラスタへCluster Sentinelを導入する手順書です。
+TLS、複数NIC、非標準ポートなど、本番構成で必要になる設定も扱います。
 
-> **はじめて触る場合は [GETTING_STARTED.md](GETTING_STARTED.md) から
-> 読んでください。** 30 分で動くところまで行けます。
+> はじめて触る場合は [GETTING_STARTED.md](GETTING_STARTED.md) から
+> 読んでください。30分で動くところまで行けます。
 > この文書は、そのあと本番構成へ広げるときに読むものです
-> （TLS、非標準ポート、複数 NIC、段階的導入など）。
+> （TLS、非標準ポート、複数NIC、段階的導入など）。
 
-**Rust ツールチェインは不要です。** 配布物は静的リンクされた単一バイナリで、
+Rustツールチェインは不要です。配布物は静的リンクされた単一バイナリで、
 [Releases](https://github.com/Lzh-Function/cluster-sentinel/releases) から
 取得したものをコピーするだけです。
 
-前提として、**Sentinel は監視対象を一切変更しません。**
-reboot・`systemctl restart`・mount 操作・`scontrol update` を実行しません。
+前提として、Sentinelは監視対象を一切変更しません。
+reboot・`systemctl restart`・mount操作・`scontrol update`を実行しません。
 したがって導入自体がクラスタの動作を変えることはありませんが、
 段階的に入れることを強く推奨します（[§7](#7-段階的導入)）。
 
@@ -26,22 +26,22 @@ reboot・`systemctl restart`・mount 操作・`scontrol update` を実行しま�
 
 | | 節 | 対象 |
 | --- | --- | --- |
-| 1 | [事前確認](#1-事前確認) | — |
-| 2 | [構成の決定](#2-構成の決定) | — |
-| 3 | [バイナリの配置](#3-バイナリの配置) | controller と agent を置く全 host |
-| 4 | [Controller の構築](#4-controller-の構築) | controller の host |
-| 5 | [cluster credential の配布](#5-cluster-credential-の配布) | 全 host |
-| 6 | [Agent の展開](#6-agent-の展開) | agent を置く各 host |
+| 1 | [事前確認](#1-事前確認) | 該当なし |
+| 2 | [構成の決定](#2-構成の決定) | 該当なし |
+| 3 | [バイナリの配置](#3-バイナリの配置) | controllerとagentを置く全ホスト |
+| 4 | [Controller の構築](#4-controllerの構築) | controllerのホスト |
+| 5 | [cluster credential の配布](#5-cluster-credentialの配布) | 全ホスト |
+| 6 | [Agent の展開](#6-agentの展開) | agentを置く各ホスト |
 | 6.7 | [監視頻度を変える](#67-監視頻度を変える) | 任意 |
-| 7 | [段階的導入](#7-段階的導入) | — |
-| 8 | [SSH ポートが 22 でない場合](#8-ssh-ポートが-22-でない場合) | 該当する場合 |
+| 7 | [段階的導入](#7-段階的導入) | 該当なし |
+| 8 | [SSH ポートが 22 でない場合](#8-sshポートが22でない場合) | 該当する場合 |
 | 9 | [その他の非標準構成](#9-その他の非標準構成) | 該当する場合 |
-| 9.7 | [NIC が複数ある場合](#97-nic-が複数ある場合vlanbridge複数-fabric) | **VLAN 環境は必読** |
-| 9.9 | [ストレージ構成は書かなくてよい](#99-ストレージ構成は書かなくてよい例外は-3-つ) | NFS を使う場合 |
-| 9.10 | [controller に agent を同居させる](#910-controller-に-agent-を同居させる) | 推奨 |
-| 10 | [導入後の確認](#10-導入後の確認) | — |
+| 9.7 | [NIC が複数ある場合](#97-nicが複数ある場合vlanbridge複数fabric) | VLAN環境は必読 |
+| 9.9 | [ストレージ構成は書かなくてよい](#99-ストレージ構成は書かなくてよい例外は3つ) | NFSを使う場合 |
+| 9.10 | [controller に agent を同居させる](#910-controllerにagentを同居させる) | 推奨 |
+| 10 | [導入後の確認](#10-導入後の確認) | 該当なし |
 | 11 | [設定ファイルテンプレート](#11-設定ファイルテンプレート) | 参考 |
-| 12 | [チェックリスト](#12-チェックリスト) | — |
+| 12 | [チェックリスト](#12-チェックリスト) | 該当なし |
 
 ---
 
@@ -51,49 +51,49 @@ reboot・`systemctl restart`・mount 操作・`scontrol update` を実行しま�
 
 | 項目 | 内容 |
 | --- | --- |
-| OS | Linux（systemd 前提） |
-| 権限 | 各 host の root（導入時のみ。常駐は非特権ユーザー） |
-| network | agent → controller への TCP 到達性（既定 7443） |
-| | controller / peer → 各 host への TCP 到達性（SSH ポート、agent ポート 7444） |
+| OS | Linux（systemd前提） |
+| 権限 | 各ホストのroot（導入時のみ。常駐は非特権ユーザー） |
+| ネットワーク | agent → controllerへのTCP到達性（既定7443） |
+| | controller / peer → 各ホストへのTCP到達性（SSHポート、agentポート7444） |
 
-**Rust ツールチェインは不要です。** 配布されるのは静的リンクされた
+Rustツールチェインは不要です。配布されるのは静的リンクされた
 単一バイナリで、ビルド済みのものをコピーするだけです。
 
-Sentinel は Slurm を **変更しません**。既存の `slurm.conf` を書き換える必要はありません。
+SentinelはSlurmを変更しません。既存の`slurm.conf`を書き換える必要はありません。
 
-### どの host に何を置くか
+### どのホストに何を置くか
 
 導入前にこの表を埋めてください。以降の手順はこれに沿って進みます。
 
-| host | 役割 | 置くもの |
+| ホスト | 役割 | 置くもの |
 | --- | --- | --- |
-| 1 台 | **controller** | バイナリ + 設定 + unit + credential（生成元） |
-| 監視したい host | **agent** | バイナリ + 設定 + unit + credential（controller からコピー） |
-| agent を置かない host | 外から観測されるだけ | **何も置きません**（controller の設定に宣言するだけ） |
+| 1台 | controller | バイナリ + 設定 + unit + credential（生成元） |
+| 監視したいホスト | agent | バイナリ + 設定 + unit + credential（controllerからコピー） |
+| agentを置かないホスト | 外から観測されるだけ | 何も置きません（controllerの設定に宣言するだけ） |
 
-**agent を置かない host にはバイナリも設定ファイルも要りません。**
-controller と peer が外から TCP で観測します。
-ただし取得できるのは到達性・SSH・NFS ポートまでで、
-load・memory・GPU・kernel event などその host の内側は一切見えません。
+agentを置かないホストにはバイナリも設定ファイルも要りません。
+controllerとpeerが外からTCPで観測します。
+ただし取得できるのは到達性・SSH・NFSポートまでで、
+load・memory・GPU・カーネルイベントなどそのホストの内側は一切見えません。
 
 ### 確認しておく情報
 
 ```bash
-# controller にする host の名前と、agent から到達できるアドレス
+# controllerにするホストの名前と、agentから到達できるアドレス
 hostname -f
 ip -o addr show
 
-# アーキテクチャ（x86_64 と ARM が混在するクラスタでは host ごとに確認）
+# アーキテクチャ（x86_64とARMが混在するクラスタではホストごとに確認）
 uname -m
 
-# Slurm の controller と node 定義（あれば）
+# Slurmのcontrollerとノード定義（あれば）
 grep -E "^(SlurmctldHost|ControlMachine|NodeName)" /etc/slurm/slurm.conf
 
-# SSH のポート（22 以外なら §8 を参照）
+# SSHのポート（22以外なら §8を参照）
 grep -iE "^\s*(Port|ListenAddress)" /etc/ssh/sshd_config
 
-# Slurm の外にある host（fileserver 等）の一覧
-#   NFS のマウント関係は agent の報告から自動で導出されるため、
+# Slurmの外にあるホスト（ファイルサーバー等）の一覧
+#   NFSのマウント関係はagentの報告から自動で導出されるため、
 #   調べておく必要はない（§9.9）
 ```
 
@@ -103,39 +103,40 @@ grep -iE "^\s*(Port|ListenAddress)" /etc/ssh/sshd_config
 
 | 決めること | 例 | 備考 |
 | --- | --- | --- |
-| environment 名 | `example-lab` | 全 host で一致させる |
-| controller を置く host | `head01` | source code には現れない。設定だけの問題 |
-| scheduler entity 名 | `example_cluster` | Slurm の ClusterName に合わせると分かりやすい |
-| observer にする host | controller / fileserver / 一部 compute | **3 台以上**を推奨（後述） |
-| クラスタ内通信の NIC | `vlan102` など | NIC が複数あるなら必須（§9.7） |
-| storage の依存関係 | どの node がどの fileserver を使うか | 誤診断を避けるために重要 |
+| environment名 | `example-lab` | 全ホストで一致させる |
+| controllerを置くホスト | `head01` | source codeには現れない。設定だけの問題 |
+| scheduler entity名 | `example_cluster` | SlurmのClusterNameに合わせると分かりやすい |
+| observerにするホスト | controller / ファイルサーバー/ 一部compute | 3台以上を推奨（後述） |
+| クラスタ内通信のNIC | `vlan102`など | NICが複数あるなら必須（§9.7） |
+| ストレージの依存関係 | どのノードがどのファイルサーバーを使うか | 誤診断を避けるために重要 |
 
-### observer を 3 台以上にする理由
+### observerを3台以上にする理由
 
-observer が 1 台しかない場合、Sentinel は **到達性の診断を行いません。**
-1 視点では「host が死んだ」と「経路が切れた」を区別できないためです。
+observerが1台しかない場合、Sentinelは到達性の診断を行いません。
+1観測元では「ホスト全体が到達不能になった」と「経路が切れた」を区別できないためです。
 
-異なる障害ドメインの host を選んでください。
-同じ storage の背後にいる 3 台は、視点 1 つを 3 回数えているだけです。
+異なる障害ドメインのホストを選んでください。
+同じストレージを使う3台は、そのストレージの障害で同時に影響を受けるためです。
 
-### storage の依存関係を書く理由
+### ストレージの依存関係を確認する理由
 
-これを書かないと、複数 node の storage 障害が
-`SHARED_STORAGE_FAILURE`（原因は fileserver）ではなく、
-個別の `NFS_CLIENT_FAILURE` として報告されます。
-5 人が 5 つの症状を追いかけることになります。
+複数ノードが同じストレージを使っていることを把握できないと、共有ストレージの障害を
+個別の`NFS_CLIENT_FAILURE`として報告する場合があります。
+NFSの依存関係はagentのマウント表から自動検出します。
+`sentinel dependency list`で実構成と一致するかを確認してください。
+自動検出できない構成は[§9.9](#99-ストレージ構成は書かなくてよい例外は3つ)の手順で設定します。
 
 ---
 
 ## 3. バイナリの配置
 
-**controller と agent を置く全 host** で行います。
-agent を置かない host には不要です。
+controllerとagentを置く全ホストで行います。
+agentを置かないホストには不要です。
 
 ### 3.1 ダウンロード
 
 [Releases](https://github.com/Lzh-Function/cluster-sentinel/releases) から、
-その host のアーキテクチャに合うものを取得します。
+そのホストのアーキテクチャに合うものを取得します。
 
 ```bash
 # x86_64
@@ -149,7 +150,7 @@ curl -fsSLO https://github.com/Lzh-Function/cluster-sentinel/releases/latest/dow
 sha256sum -c sentinel-aarch64-unknown-linux-musl.sha256
 ```
 
-`uname -m` が `x86_64` なら前者、`aarch64` なら後者です。
+`uname -m`が`x86_64`なら前者、`aarch64`なら後者です。
 
 ### 3.2 配置
 
@@ -165,26 +166,26 @@ config version:   1
 target:           x86_64-unknown-linux-musl
 ```
 
-> 初回はこれで構いませんが、**すでに Sentinel が動いているホストを
-> 更新するときは `install` ではなく `mv` を使ってください。**
-> 実行中のバイナリは truncate できず `Text file busy` になります
+> 初回はこれで構いませんが、すでにSentinelが動いているホストを
+> 更新するときは`install`ではなく`mv`を使ってください。
+> 実行中のバイナリはtruncateできず`Text file busy`になります
 > （[OPERATIONS.md のアップグレード](OPERATIONS.md#アップグレード)）。
 
-**必ず `/usr/local/bin` に置いてから次に進んでください。**
-ダウンロードしたディレクトリのまま `sentinel install` を実行すると、
-生成される systemd unit がそのパスを指し、ディレクトリを片付けた時点で
-サービスが起動しなくなります。`install` はこの状態を警告します。
+必ず`/usr/local/bin`に置いてから次に進んでください。
+ダウンロードしたディレクトリのまま`sentinel install`を実行すると、
+生成されるsystemd unitがそのパスを指し、ディレクトリを片付けた時点で
+サービスが起動しなくなります。`install`はこの状態を警告します。
 
-静的リンクなので、glibc のバージョンや配布物の追加は不要です。
+静的リンクなので、glibcのバージョンや配布物の追加は不要です。
 
 ```bash
 ldd /usr/local/bin/sentinel      # -> statically linked
 ```
 
-同一アーキテクチャなら全 host に同じファイルを配れます。
+同一アーキテクチャなら全ホストに同じファイルを配れます。
 
 ```bash
-# 例: 各 compute node へ配る
+# 例: 各計算ノードへ配る
 for n in node01 node02 node03; do
   scp sentinel-x86_64-unknown-linux-musl "$n":/tmp/sentinel
   ssh "$n" 'sudo install -m 0755 /tmp/sentinel /usr/local/bin/sentinel && rm /tmp/sentinel'
@@ -193,20 +194,20 @@ done
 
 ---
 
-## 4. Controller の構築
+## 4. Controllerの構築
 
-**controller にする host 1 台**で行います。
+controllerにするホスト1台で行います。
 
 ### 4.1 サービスユーザーを作る
 
-`install` より先に作ってください。生成されるファイルの所有者になります。
+`install`より先に作ってください。生成されるファイルの所有者になります。
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentinel
 ```
 
-`/etc/sentinel` も `/var/lib/sentinel` も、**この時点では存在しなくて構いません。**
-前者は `install` が、後者は systemd が起動時に作ります。
+`/etc/sentinel`も`/var/lib/sentinel`も、この時点では存在しなくて構いません。
+前者は`install`が、後者はsystemdが起動時に作ります。
 
 ### 4.2 install
 
@@ -214,26 +215,26 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentinel
 sudo sentinel install controller
 ```
 
-これ 1 回で、ディレクトリごと以下が生成されます。
+これ1回で、ディレクトリごと以下が生成されます。
 
 | 生成物 | 内容 |
 | --- | --- |
-| `/etc/sentinel/config.toml` | **全設定を既定値のまま書き出した設定ファイル**（説明つき） |
-| `/etc/systemd/system/sentinel-controller.service` | hardening 済み systemd unit |
-| `/etc/sentinel/token` | cluster credential（32 byte 乱数、mode 0400） |
+| `/etc/sentinel/config.toml` | 全設定を既定値のまま書き出した設定ファイル（説明つき） |
+| `/etc/systemd/system/sentinel-controller.service` | 権限とアクセスの制限済みsystemd unit |
+| `/etc/sentinel/token` | cluster credential（32 byte乱数、mode 0400） |
 
-**既存のファイルは上書きしません。** バージョンアップ後にもう一度実行しても、
-調整済みの設定や credential はそのまま残ります
-（credential が入れ替わると全 agent が一斉に締め出されるため）。
-上書きしたい場合のみ `--force` を付けてください。
+既存のファイルは上書きしません。バージョンアップ後にもう一度実行しても、
+調整済みの設定やcredentialはそのまま残ります
+（credentialが入れ替わると全agentが一斉に締め出されるため）。
+上書きしたい場合のみ`--force`を付けてください。
 
-内容を先に確認したい場合:
+内容を先に確認したい場合
 
 ```bash
 sentinel install controller --dry-run
 ```
 
-credential を secret manager などで別管理している場合:
+credentialをsecret managerなどで別管理している場合
 
 ```bash
 sudo sentinel install controller --no-credential
@@ -241,40 +242,40 @@ sudo sentinel install controller --no-credential
 
 ### 4.3 所有者を合わせる
 
-`install` は root として書くので、サービスユーザーに渡します。
+`install`はrootとして書くので、サービスユーザーに渡します。
 
 ```bash
 sudo chown -R sentinel:sentinel /etc/sentinel
 ```
 
-`/var/lib/sentinel`（database の置き場）は unit の `StateDirectory=` により
-**systemd が初回起動時に作成し、所有者も設定します。** 手で作る必要はありません。
+`/var/lib/sentinel`（databaseの置き場）はunitの`StateDirectory=`により
+systemdが初回起動時に作成し、所有者も設定します。手で作る必要はありません。
 
 ### 4.4 設定の仕上げ
 
-生成された `/etc/sentinel/config.toml` のうち、
-**書き換えが必要なのは `CHANGE-ME` を含む行だけ**です。
-controller の場合は `environment` の 1 行です。
+生成された`/etc/sentinel/config.toml`のうち、
+書き換えが必要なのは`CHANGE-ME`を含む行だけです。
+controllerの場合は`environment`の1行です。
 
 それ以外はすべて既定値がそのまま書き出されており、
 変更したい行のコメントを外すか値を書き換えます。
-Slurm の外にある fileserver や依存関係は、
-ファイル内のコメント例を参考にしてください（§11 にも同じものがあります）。
+Slurmの外にあるファイルサーバーや依存関係は、
+ファイル内のコメント例を参考にしてください（§11にも同じものがあります）。
 
 ### 4.5 検証
 
-**起動前に必ず実行してください。**
+起動前に必ず実行してください。
 
 ```bash
 sudo -u sentinel sentinel config check
 ```
 
-検出できる問題をすべて報告します（最初の 1 件で止まりません）。
-`error` が 1 つでもあれば起動しません。
+検出できる問題をすべて報告します（最初の1件で止まりません）。
+`error`が1つでもあれば起動しません。
 
-`warning` は許容されます。特に
-「宣言されていない entity への依存」は、
-Slurm discovery や agent registration から到着する予定のものであれば正常です。
+`warning`は許容されます。特に
+「宣言されていないentityへの依存」は、
+Slurm自動検出やagent registrationから到着する予定のものであれば正常です。
 
 ### 4.6 起動
 
@@ -287,7 +288,7 @@ journalctl -u sentinel-controller -f
 
 ### 4.7 動作確認
 
-**CLI は root か `sentinel` ユーザーで実行してください。**
+CLIはrootか`sentinel`ユーザーで実行してください。
 
 ```bash
 sudo -u sentinel sentinel status     # 推奨
@@ -295,8 +296,8 @@ sudo sentinel status
 ```
 
 一般ユーザーで実行すると設定ファイルを読めません。
-設定ファイルは world-readable にしていません
-（`[[notification.webhooks]]` の URL 自体が credential を含みうるため）。
+設定ファイルは全ユーザーから読み取り可能にしていません
+（`[[notification.webhooks]]`のURL自体がcredentialを含みうるため）。
 
 ```
 $ sentinel status
@@ -313,7 +314,7 @@ sudo -u sentinel sentinel status
 sudo -u sentinel sentinel dependency list
 ```
 
-**この時点で entity は 0 件です。これは正常です。**
+この時点でentityは0件です。これは正常です。
 
 ```
 ENVIRONMENT: example-lab
@@ -321,11 +322,11 @@ ENVIRONMENT: example-lab
 No entities known yet.
 ```
 
-entity が現れる経路は 2 つあり、どちらもまだ動いていないためです。
+entityが現れる経路は2つあり、どちらもまだ動いていないためです。
 
-**1. Slurm discovery。** `install` は `scontrol` の有無を見て
-`[discovery.slurm] enabled` を設定します。この host に `scontrol` が
-無かった場合は `false` になっているので、Slurm クラスタなら手で `true` にします。
+1. Slurm discovery。`install`は`scontrol`の有無を見て
+`[discovery.slurm] enabled`を設定します。このホストに`scontrol`が
+無かった場合は`false`になっているので、Slurmクラスタなら手で`true`にします。
 
 ```bash
 sudo -u sentinel grep -A3 "discovery.slurm" /etc/sentinel/config.toml
@@ -336,7 +337,7 @@ sudo -u sentinel grep -A3 "discovery.slurm" /etc/sentinel/config.toml
 enabled = true
 ```
 
-有効にしたら、次の inventory 周期（既定 5 分）を待たずに実行できます。
+有効にしたら、次の監視対象一覧周期（既定5分）を待たずに実行できます。
 
 ```bash
 sudo systemctl restart sentinel-controller
@@ -344,20 +345,20 @@ sudo -u sentinel sentinel discover
 sudo -u sentinel sentinel status
 ```
 
-**2. agent の登録。** §6 で展開すると現れます。
+2. agentの登録。§6で展開すると現れます。
 
-Slurm を使っていない、あるいは Slurm の外にある host は
-`[[entities]]` で宣言します（§11.1 のテンプレート参照）。
+Slurmを使っていない、あるいはSlurmの外にあるホストは
+`[[entities]]`で宣言します（§11.1のテンプレート参照）。
 
-agent がいない entity が `UNKNOWN` と出るのも正常です。
-**観測していないものを healthy とは呼びません。**
+agentがいないentityが`UNKNOWN`と出るのも正常です。
+観測していないものをhealthyとは呼びません。
 
 ---
 
-## 5. cluster credential の配布
+## 5. cluster credentialの配布
 
-**environment 内の全 host で同一の値**を使用します。
-controller の `install` が生成したものを、各 host に配布してください。
+environment内の全ホストで同一の値を使用します。
+controllerの`install`が生成したものを、各ホストに配布してください。
 
 ```bash
 sudo scp /etc/sentinel/token <host>:/etc/sentinel/token
@@ -366,23 +367,23 @@ sudo chown sentinel:sentinel /etc/sentinel/token
 sudo chmod 0400 /etc/sentinel/token
 ```
 
-> credential 無しでは controller も agent も **起動を拒否します**。
+> credential無しではcontrollerもagentも起動を拒否します。
 > 未認証で動作するモードはありません。
 
-配布に scp を使う場合、経由地にファイルを残さないよう注意してください。
+配布にscpを使う場合、経由地にファイルを残さないよう注意してください。
 
-`sentinel install agent` は credential を生成しません（§6.1）。
+`sentinel install agent`はcredentialを生成しません（§6.1）。
 
 ---
 
-## 6. Agent の展開
+## 6. Agentの展開
 
-**agent を置く各 host** で行います。以下はすべてその host 上での作業です。
+agentを置く各ホストで行います。以下はすべてそのホスト上での作業です。
 
-前提は「§3 でバイナリを `/usr/local/bin/sentinel` に置いた」ことだけです。
-`/etc/sentinel` は存在しなくて構いません。`install` が作ります。
+前提は「§3でバイナリを`/usr/local/bin/sentinel`に置いた」ことだけです。
+`/etc/sentinel`は存在しなくて構いません。`install`が作ります。
 
-### 6.1 サービスユーザーと install
+### 6.1 サービスユーザーとinstall
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentinel
@@ -390,22 +391,22 @@ sudo sentinel install agent
 sudo chown -R sentinel:sentinel /etc/sentinel
 ```
 
-生成物は 2 つです。
+生成物は2つです。
 
 | 生成物 | 内容 |
 | --- | --- |
 | `/etc/sentinel/config.toml` | 全設定を既定値のまま書き出した設定ファイル |
-| `/etc/systemd/system/sentinel-agent.service` | hardening 済み systemd unit |
+| `/etc/systemd/system/sentinel-agent.service` | 権限とアクセスの制限済みsystemd unit |
 
-**credential は生成されません。** controller のものを配ります（§5）。
-agent が自前で生成すれば、クラスタの誰も知らない credential ができてしまい、
+credentialは生成されません。controllerのものを配ります（§5）。
+agentが自前で生成すれば、クラスタの誰も知らないcredentialができてしまい、
 「設定の問題」が「認証の失敗」として現れることになるためです。
 
-`/var/lib/sentinel`（spool の置き場）は systemd が初回起動時に作ります。
+`/var/lib/sentinel`（spoolの置き場）はsystemdが初回起動時に作ります。
 
-### 6.2 credential を置く
+### 6.2 credentialを置く
 
-§5 で controller から配ったものを配置します。
+§5でcontrollerから配ったものを配置します。
 
 ```bash
 sudo install -o sentinel -g sentinel -m 0400 /path/to/token /etc/sentinel/token
@@ -413,23 +414,23 @@ sudo install -o sentinel -g sentinel -m 0400 /path/to/token /etc/sentinel/token
 
 ### 6.3 設定を書き換える
 
-`CHANGE-ME` を含む **2 行**だけです。
+`CHANGE-ME`を含む2行だけです。
 
 ```toml
 environment = "CHANGE-ME-environment"                 # controller と一致させる
 controller_address = "CHANGE-ME-controller-host:7443" # controller のアドレス
 ```
 
-capability は agent が自動検出するため、列挙する必要はありません。
+capabilityはagentが自動検出するため、列挙する必要はありません。
 
-**NIC が複数ある host では、もう 1 行必要です**（§9.7）。
+NICが複数あるホストでは、もう1行必要です（§9.7）。
 まず候補を確認します。
 
 ```bash
 sudo sentinel doctor
 ```
 
-候補が複数あると警告が出るので、`[agent]` セクションに追記します。
+候補が複数あると警告が出るので、`[agent]`セクションに追記します。
 
 ```toml
 [agent]
@@ -448,26 +449,26 @@ systemctl status sentinel-agent
 ### 6.5 確認
 
 ```bash
-# この host が Sentinel からどう見えるか、capability と報告アドレスの判定理由つき
+# このホストがSentinelからどう見えるか、capabilityと報告アドレスの判定理由つき
 sudo sentinel doctor
 
-# controller 側から
+# controller側から
 sentinel entity show <hostname>
 sentinel status
 ```
 
-`sentinel doctor` は capability ごとに
+`sentinel doctor`はcapabilityごとに
 「detected on this host」「not present on this host」
 「forced on by configuration」「suggested by a role」
 のいずれかを表示します。想定と違う場合はここで分かります。
 
-報告アドレスの行に `!` の警告が残っていないことも確認してください。
+報告アドレスの行に`!`の警告が残っていないことも確認してください。
 
 ### 6.6 まとめて展開する場合
 
-**ノードが 10 台を超えるなら [Ansible ロール](../deploy/ansible/) を使ってください。**
-§3〜§6 をそのまま自動化してあり、アーキテクチャ別のバイナリ取得・
-チェックサム検証・credential 配布・`config check`・起動まで行います。
+ノードが10台を超えるなら [Ansible ロール](../deploy/ansible/) を使ってください。
+§3〜§6をそのまま自動化してあり、アーキテクチャ別のバイナリ取得・
+チェックサム検証・credential配布・`config check`・起動まで行います。
 
 ```bash
 cd deploy/ansible
@@ -477,19 +478,19 @@ ansible-playbook -i inventory.ini site.yml --limit node01   # まず 1 台
 ansible-playbook -i inventory.ini site.yml
 ```
 
-SSH と `sudo` にパスワードが必要な場合:
+SSHと`sudo`にパスワードが必要な場合
 
 ```bash
 ansible-playbook -i inventory.ini site.yml --ask-pass --ask-become-pass
 ```
 
-`--ask-pass` には `sshpass` が必要です。**SSH は鍵にしておくことを推奨します**
-（`ssh-copy-id` を 1 回。パスワード認証は毎タスクで使われ、
-`PasswordAuthentication no` の環境では使えません）。
+`--ask-pass`には`sshpass`が必要です。SSHは鍵にしておくことを推奨します
+（`ssh-copy-id`を1回。パスワード認証は毎タスクで使われ、
+`PasswordAuthentication no`の環境では使えません）。
 詳細は [deploy/ansible/README.md](../deploy/ansible/README.md) を参照してください。
 
-Sentinel 側に Ansible 固有のものはありません。別の構成管理ツールなら、
-同じ手順（バイナリを置く → `sentinel install agent` → 設定と credential を配る）
+Sentinel側にAnsible固有のものはありません。別の構成管理ツールなら、
+同じ手順（バイナリを置く → `sentinel install agent` → 設定とcredentialを配る）
 を移植してください。
 
 #### 手作業で配る場合
@@ -509,9 +510,9 @@ for n in node01 node02 node03; do
 done
 ```
 
-このあと各 host の `config.toml` を書き換えます
-（`environment`、`controller_address`、必要なら `interface`）。
-3 行とも全 host で同じ値になるなら、書き換えた 1 つを配って構いません。
+このあと各ホストの`config.toml`を書き換えます
+（`environment`、`controller_address`、必要なら`interface`）。
+3行とも全ホストで同じ値になるなら、書き換えた1つを配って構いません。
 
 ```bash
 for n in node01 node02 node03; do
@@ -525,14 +526,14 @@ for n in node01 node02 node03; do
 done
 ```
 
-> `scp` の経由地にファイルを残さないでください。credential も設定も
-> `/tmp` を通ります。
+> `scp`の経由地にファイルを残さないでください。credentialも設定も
+> `/tmp`を通ります。
 
 ---
 
 ## 6.7 監視頻度を変える
 
-生成された設定ファイルには全 probe の既定値が
+生成された設定ファイルには全probeの既定値が
 コメントアウトされた状態で書き出されています。
 変えたい行のコメントを外してください。
 
@@ -541,20 +542,20 @@ done
 [probes."network.tcp"]
 interval = "15s"
 
-# この環境では GPU を別系統で見ている
+# この環境ではGPUを別系統で見ている
 [probes."gpu.nvidia"]
 enabled = false
 ```
 
-書かれていない probe は既定のまま動きます。
-存在しない probe id を書くと `config check` が error にします
-（黙って無視されると「変更したつもりで変わっていない」状態になるため）。
+書かれていないprobeは既定のまま動きます。
+存在しないprobe idを書くと`config check`がerrorにします
+（警告なしに無視されると「変更したつもりで変わっていない」状態になるため）。
 
-`max_outstanding` は引き下げしかできません。
-`nfs.client.io` と `journal.events` は同時実行 1 に固定されており、
-blocking syscall を積み上げないための制約は設定で覆せません。
+`max_outstanding`は引き下げしかできません。
+`nfs.client.io`と`journal.events`は同時実行1に固定されており、
+blockingシステムコールを積み上げないための制約は設定で覆せません。
 
-一覧は [CONFIGURATION.md](CONFIGURATION.md) の `[probes]` にあります。
+一覧は [CONFIGURATION.md](CONFIGURATION.md) の`[probes]`にあります。
 
 ---
 
@@ -564,51 +565,52 @@ blocking syscall を積み上げないための制約は設定で覆せません
 
 | 段階 | 作業 | 確認すること | 目安 |
 | --- | --- | --- | --- |
-| 1 | controller のみ | `sentinel status` が既存構成を正しく表示 | 1 日 |
-| 2 | agent 1 台（重要度の低い node） | 登録される。`sentinel entity show` が妥当 | 1 日 |
-| 3 | agent 数台 | 全台登録。誤検知が出ない | 2-3 日 |
-| 4 | `observer.peer` を付与 | `sentinel peers` で observer が 3 台付く | 2-3 日 |
-| 5 | storage の依存関係を記述 | `sentinel dependency list` が実構成と一致 | |
-| 6 | notification を有効化 | **まずテスト用の宛先へ** | 1 週間 |
+| 1 | controllerのみ | `sentinel status`が既存構成を正しく表示 | 1日 |
+| 2 | agent 1台（重要度の低いノード） | 登録される。`sentinel entity show`が妥当 | 1日 |
+| 3 | agent数台 | 全台登録。誤検知が出ない | 2-3日 |
+| 4 | `observer.peer`を付与 | `sentinel peers`でobserverが3台付く | 2-3日 |
+| 5 | ストレージの依存関係を確認し、不足分を設定 | `sentinel dependency list`が実構成と一致 | |
+| 6 | notificationを有効化 | まずテスト用の宛先へ | 1週間 |
 | 7 | 全台展開 | | |
 
-各段階で数日おき、**誤検知が出ないこと**を確認してから次へ進んでください。
+各段階で数日おき、誤検知が出ないことを確認してから次へ進んでください。
 誤検知に慣れた運用者は、本物の警告も無視するようになります。
 
 ### 実クラスタでの障害注入について
 
-**自動実行してはなりません。**
+自動実行してはなりません。
 
-* NFS server の停止
-* network 全体への iptables 変更
+* NFSサーバーの停止
+* ネットワーク全体へのiptables変更
 * reboot
-* filesystem 操作
+* ファイルシステム操作
 
-Docker 疑似クラスタ（`dev/compose/`）で代替できるものはそちらで行ってください。
+Docker疑似クラスタ（`dev/compose/`）で代替できるものはそちらで行ってください。
 実機でしか確認できない項目は [VM_VALIDATION.md](VM_VALIDATION.md) にまとめてあります。
 
 ---
 
-## 8. SSH ポートが 22 でない場合
+## 8. SSHポートが22でない場合
 
-SSH を 22 以外で運用している場合、**設定しないと全 host が SSH 障害として報告されます。**
-probe が閉じたポートを叩き、正しく「何もない」と報告するためです。
+SSHを22以外で運用する場合は、probeが実際のポートに接続することを確認してください。
+agentがいるホストでは通常、自動検出します。agentがいないホストでは設定が必要です。
+22番のまま接続すると、正常なSSHサービスも障害として報告されます。
 
-### 8.1 agent がいる host
+### 8.1 agentがいるホスト
 
-**通常は何もしなくて構いません。**
-agent が `/etc/ssh/sshd_config` を読み、`Port` / `ListenAddress host:port` から
-実際のポートを検出して controller へ報告します。
+通常は何もしなくて構いません。
+agentが`/etc/ssh/sshd_config`を読み、`Port` / `ListenAddress host:port`から
+実際のポートを検出してcontrollerへ報告します。
 
-確認:
+確認
 
 ```bash
 sentinel doctor --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("hostname"))'
-# controller 側で、報告されたポートを確認
+# controller側で、報告されたポートを確認
 sentinel entity show <hostname> --json | python3 -c 'import json,sys; print(json.load(sys.stdin))'
 ```
 
-`sshd_config` が読めない、あるいはポートが別の場所で設定されている場合は
+`sshd_config`が読めない、あるいはポートが別の場所で設定されている場合は
 明示します。
 
 ```toml
@@ -623,9 +625,9 @@ ssh_port = 2222        # sshd_config から読めない場合のみ
 [agent] ssh_port  >  sshd_config の Port  >  既定値 22
 ```
 
-### 8.2 agent がいない host（設定で宣言する host）
+### 8.2 agentがいないホスト（設定で宣言するホスト）
 
-自分で報告できないため、**必ず明示してください。**
+自分で報告できないため、必ず明示してください。
 
 ```toml
 [[entities]]
@@ -636,9 +638,9 @@ ports = { ssh = 2222 }
 capabilities = ["storage.nfs.server", "observer.peer"]
 ```
 
-### 8.3 host ごとにポートが異なる場合
+### 8.3 ホストごとにポートが異なる場合
 
-`ports` は entity ごとの設定です。混在して構いません。
+`ports`はentityごとの設定です。混在して構いません。
 
 ```toml
 [[entities]]
@@ -649,60 +651,60 @@ ports = { ssh = 2222 }
 [[entities]]
 type = "host"
 name = "filesrv02"
-# 22 のまま。ports を書かない
+# 22のまま。portsを書かない
 ```
 
 ### 8.4 確認方法
 
 ```bash
-# 期待どおりのポートを叩いているか
+# 期待どおりのポートを呼び出しているか
 sentinel entity show <hostname>       # ssh component が HEALTHY か
 sentinel diagnose                     # SSH_SERVICE_FAILURE が出ていないか
 ```
 
-`SSH_SERVICE_FAILURE` が全 host に出る場合、ポート設定を疑ってください。
+`SSH_SERVICE_FAILURE`が全ホストに出る場合、ポート設定を疑ってください。
 
 ---
 
 ## 9. その他の非標準構成
 
-### 9.1 agent のポートを変える
+### 9.1 agentのポートを変える
 
-既定は 7444 です。変更する場合:
+既定は7444です。変更する場合
 
 ```toml
 [agent]
 listen = "0.0.0.0:9444"
 ```
 
-agent は自分のポートを registration で報告するため、
-**controller 側に追記する必要はありません。**
-peer も正しいポートを叩きます。
+agentは自分のポートをregistrationで報告するため、
+controller側に追記する必要はありません。
+peerも正しいポートに接続します。
 
-agent がいない host に対して指定する場合のみ:
+agentがいないホストに対して指定する場合のみ
 
 ```toml
 ports = { agent = 9444 }
 ```
 
-### 9.2 controller のポートを変える
+### 9.2 controllerのポートを変える
 
 ```toml
-# controller 側
+# controller側
 [controller]
 listen = "0.0.0.0:8443"
 
-# agent 側
+# agent側
 [agent]
 controller_address = "head01:8443"
 ```
 
-### 9.3 Slurm NodeName と hostname が異なる
+### 9.3 Slurm NodeNameとhostnameが異なる
 
-**設定は不要です。** Sentinel は両者を別のものとして扱い、
-`NodeHostName` で対応付けます。
+設定は不要です。Sentinelは両者を別のものとして扱い、
+`NodeHostName`で対応付けます。
 
-### 9.4 Slurm の設定ファイルが標準の場所にない
+### 9.4 Slurmの設定ファイルが標準の場所にない
 
 ```toml
 [discovery.slurm]
@@ -710,10 +712,10 @@ enabled = true
 scontrol_path = "/opt/slurm/bin/scontrol"
 ```
 
-allowlist はファイル名で照合するため、
-`/opt/slurm/bin/scontrol` は許可され、`/opt/scontrol/rm` は許可されません。
+allowlistはファイル名で照合するため、
+`/opt/slurm/bin/scontrol`は許可され、`/opt/scontrol/rm`は許可されません。
 
-### 9.5 capability の自動検出が期待と違う
+### 9.5 capabilityの自動検出が期待と違う
 
 ```bash
 sentinel doctor    # 判定理由を確認
@@ -728,7 +730,7 @@ sentinel doctor    # 判定理由を確認
 "storage.zfs"        = "enable"    # 検出が何も言わなかった場合に ON
 ```
 
-優先順位:
+優先順位
 
 ```text
 disable  >  force  >  runtime discovery  >  enable / role hint
@@ -736,28 +738,28 @@ disable  >  force  >  runtime discovery  >  enable / role hint
 
 ### 9.6 TLS
 
-TLS は組み込みです。reverse proxy は不要です。
+TLSは組み込みです。reverse proxyは不要です。
 
-平文のままでも動作しますが、cluster credential は bearer token なので、
-wire を読める者は全 agent になりすませます。
-隔離された管理 network 以外では TLS を設定してください。
+平文のままでも動作しますが、cluster credentialはbearer tokenなので、
+wireを読める者は全agentになりすませます。
+隔離された管理ネットワーク以外ではTLSを設定してください。
 
 #### 9.6.1 証明書の準備
 
-既存の PKI で発行してください。Sentinel は証明書を生成しません
-（監視システムが trust anchor を発行すると、誰も監査しない private CA が増えるだけです）。
+既存のPKIで発行してください。Sentinelは証明書を生成しません
+（CAの管理と監査は、既存の証明書発行手順で行います）。
 
-controller の証明書には、**agent が接続に使う名前またはアドレス**を
-SAN に入れてください。
+controllerの証明書には、agentが接続に使う名前またはアドレスを
+SANに入れてください。
 
 ```bash
-# 例: 手元の CA で発行する場合
+# 例: 手元のCAで発行する場合
 openssl x509 -req -in controller.csr -CA ca.crt -CAkey ca.key \
   -extfile <(printf "subjectAltName=DNS:controller.example,IP:10.0.0.10") \
   -days 825 -out controller.crt
 ```
 
-配置とパーミッション:
+配置とパーミッション
 
 ```bash
 install -d -m 0755 /etc/sentinel/tls
@@ -766,7 +768,7 @@ install -m 0644 controller.crt /etc/sentinel/tls/controller.crt
 install -m 0600 -o sentinel -g sentinel controller.key /etc/sentinel/tls/controller.key
 ```
 
-#### 9.6.2 TLS のみ（server 認証）
+#### 9.6.2 TLSのみ（サーバー認証）
 
 ```toml
 # controller
@@ -784,14 +786,14 @@ controller_address = "controller.example:7443"
 ca = "/etc/sentinel/tls/ca.crt"
 ```
 
-`[tls]` に client 側の設定が 1 つでもあると、
-`host:port` は `https://` として解釈されます。
-`controller_address` に scheme を書いた場合はそちらが優先されます。
+`[tls]`にクライアント側の設定が1つでもあると、
+`host:port`は`https://`として解釈されます。
+`controller_address`にschemeを書いた場合はそちらが優先されます。
 
 #### 9.6.3 mutual TLS（推奨）
 
-**token が漏れても耐えられる構成はこれだけです。**
-証明書を持たない client は token を出すことすらできません。
+tokenが漏れても耐えられる構成はこれだけです。
+証明書を持たないクライアントはtokenを使った認証に進めません。
 
 ```toml
 # controller
@@ -809,12 +811,12 @@ client_cert = "/etc/sentinel/tls/agent.crt"
 client_key  = "/etc/sentinel/tls/agent.key"
 ```
 
-agent 用の証明書は host ごとに発行してください
-（1 枚を全 host で共有すると、1 台の侵害が全体の侵害になります）。
+agent用の証明書はホストごとに発行してください
+（1枚を全ホストで共有すると、1台の侵害が全体の侵害になります）。
 
-#### 9.6.4 IP アドレスで接続する場合
+#### 9.6.4 IPアドレスで接続する場合
 
-controller の証明書が名前しか持たず、agent が IP で接続する場合:
+controllerの証明書が名前しか持たず、agentがIPで接続する場合
 
 ```toml
 [agent]
@@ -825,27 +827,27 @@ ca          = "/etc/sentinel/tls/ca.crt"
 server_name = "controller.example"   # 証明書上の名前
 ```
 
-`server_name` は「アドレスで接続するが、証明書上の名前で検証する」ための
-設定です。`controller_address` が既に名前の場合は使えません（エラーになります）。
+`server_name`は「アドレスで接続するが、証明書上の名前で検証する」ための
+設定です。`controller_address`が既に名前の場合は使えません（エラーになります）。
 
-#### 9.6.5 PKI がまだ無い場合
+#### 9.6.5 PKIがまだ無い場合
 
 ```toml
 [tls]
 insecure_skip_verify = true
 ```
 
-**これは TLS を装飾に変えます。** 接続を横取りできる攻撃者は
-任意の証明書を提示でき、credential はそのまま読まれます。
+これはTLSで接続先の正当性を確認できなくなります。接続を横取りできる攻撃者は
+任意の証明書を提示でき、credentialはそのまま読まれます。
 起動のたびに警告が出ます。暫定措置としてのみ使ってください。
 
 #### 9.6.6 確認
 
 ```bash
-# 設定の妥当性（cert だけあって key が無い等はここで落ちる）
+# 設定の検証。certだけ指定しkeyがない場合などはエラーになる
 sentinel config check
 
-# controller が TLS で listen しているか
+# controllerがTLSでlistenしているか
 journalctl -u sentinel-controller | grep "controller listening"
 #   -> tls=true
 
@@ -854,33 +856,33 @@ openssl s_client -connect controller.example:7443 \
   -CAfile /etc/sentinel/tls/ca.crt </dev/null
 ```
 
-TLS 材料が読めない場合、controller は**起動に失敗します**。
-平文で起動して「暗号化されている」と誤解されるのが最悪の失敗形だからです。
+TLSの証明書や秘密鍵が読めない場合、controllerは起動に失敗します。
+設定した暗号化が有効にならないまま運用されるのを防ぐためです。
 
 詳細は [SECURITY.md](SECURITY.md) と
-[CONFIGURATION.md](CONFIGURATION.md) の `[tls]` を参照してください。
+[CONFIGURATION.md](CONFIGURATION.md) の`[tls]`を参照してください。
 
-### 9.6.5 firewall で開けるポート
+### 9.6.7 firewallで開けるポート
 
-peer 同士が観測しあうため、**ノード間**で以下が通る必要があります。
+peer同士が観測しあうため、ノード間で以下が通る必要があります。
 
 | ポート | 用途 | 開けないとどうなるか |
 | --- | --- | --- |
-| SSH のポート（22 とは限らない） | 到達性 probe と SSH probe | host が到達不能に見える |
-| **7444** | agent の health endpoint | `agent` component が UNAVAILABLE のまま |
-| 7443（→ controller のみ） | agent からの報告 | agent が登録できない |
+| SSHのポート（22とは限らない） | 到達性probeとSSH probe | ホストが到達不能に見える |
+| 7444 | agentのhealth endpoint | `agent` componentがUNAVAILABLEのまま |
+| 7443（→ controllerのみ） | agentからの報告 | agentが登録できない |
 
-**DROP ではなく REJECT にするか、明示的に許可してください。**
-DROP された場合、probe は timeout と区別できません。
+DROPではなくREJECTにするか、明示的に許可してください。
+DROPされた場合、probeはタイムアウトと区別できません。
 
-到達性 probe は**設定済みの SSH ポート**を叩きます（22 固定ではありません）。
-agent が `sshd_config` から自動検出して報告するので、通常は設定不要です。
+到達性probeは設定済みのSSHポートに接続します（22固定ではありません）。
+agentが`sshd_config`から自動検出して報告するので、通常は設定不要です。
 
-### 9.7 NIC が複数ある場合（VLAN・bridge・複数 fabric）
+### 9.7 NICが複数ある場合（VLAN・bridge・複数fabric）
 
-peer がこの host を probe するアドレスは、agent が自動検出します。
-ただし **「どの NIC がクラスタ内通信を担っているか」は自動では分かりません。**
-それは host の性質ではなく site の事実です。
+peerがこのホストをprobeするアドレスは、agentが自動検出します。
+ただし 「どのNICがクラスタ内通信を担っているか」は自動では分かりません。
+使用するNICはクラスタの構成で決まるため、ホストの情報だけでは判別できません。
 
 ```
 $ ip -o addr show
@@ -892,8 +894,8 @@ $ ip -o addr show
 9: wg0      inet 10.0.0.1/24
 ```
 
-この host を調べても、`vlan102` が答えだと分かる手がかりはありません。
-そのため Sentinel は **候補が複数あることを報告し、選択を求めます。**
+このホストを調べても、`vlan102`が答えだと分かる手がかりはありません。
+そのためSentinelは候補が複数あることを報告し、選択を求めます。
 
 ```bash
 sentinel doctor
@@ -910,21 +912,21 @@ Address:     192.0.2.10
     Set [agent] interface to say which.
 ```
 
-**指定してください。** fleet 全体で同じ 1 行が使えます。
+指定してください。全ノードで同じ1行が使えます。
 
 ```toml
 [agent]
 interface = "vlan102"
 ```
 
-NAT 越しなど host 自身から見えないアドレスの場合は直接指定します。
+NAT越しなどホスト自身から見えないアドレスの場合は直接指定します。
 
 ```toml
 [agent]
 address = "203.0.113.9"
 ```
 
-agent がいない host は、これまでどおり `[[entities]]` の `addresses` で宣言します。
+agentがいないホストは、これまでどおり`[[entities]]`の`addresses`で宣言します。
 
 ```toml
 [[entities]]
@@ -935,33 +937,33 @@ addresses = ["192.0.2.30"]
 
 #### 指定しないとどうなるか
 
-「物理 NIC に見えるもののうち名前順で最初」が選ばれます。
-上の例では `vlan101` です。**多くの場合これは間違いです。**
+「物理NICに見えるもののうち名前順で最初」が選ばれます。
+上の例では`vlan101`です。多くの場合これは間違いです。
 
 除外されるものは決まっています（ここは自動で正しく処理されます）。
 
-* loopback アドレス（`127.0.0.0/8`、`::1`）
+* loopbackアドレス（`127.0.0.0/8`、`::1`）
 * link-local（`169.254.0.0/16`、`fe80::/10`）
-* **`lo` インターフェース上の全アドレス** — WSL の `10.255.255.254/32` のように、
-  loopback アドレスではないが誰からも到達できないもの
-* `docker*` / `br-*` / `veth*` / `virbr*` / `wg*` / `tailscale*` などは後順位
+* `lo`インターフェース上の全アドレス、WSLの`10.255.255.254/32`のように、
+  loopbackアドレスではないが誰からも到達できないもの
+* `docker*` / `br-*` / `veth*` / `virbr*` / `wg*` / `tailscale*`などは後順位
 
-#### 指定した NIC にアドレスが無い場合
+#### 指定したNICにアドレスが無い場合
 
-**アドレスを報告しません。別の NIC にフォールバックしません。**
-運用者が選ばなかったネットワークに peer 全員を向けるのが、
+アドレスを報告しません。別のNICにフォールバックしません。
+運用者が選ばなかったネットワークにpeer全員を向けるのが、
 この設定で防ぎたい障害そのものだからです。
 
-controller は host 名にフォールバックし、`doctor` が理由と実在する候補を表示します。
+controllerはホスト名にフォールバックし、`doctor`が理由と実在する候補を表示します。
 
-### 9.8 database の保持期間
+### 9.8 databaseの保持期間
 
-controller の database は書き込み一方で、既定では
-observation 14 日 / transition 90 日 / 解決済み incident 180 日で prune されます。
-実測で host 1 台あたり 1 日約 170 MB 増えるため、
-既定なら host あたり約 2.4 GB で頭打ちになります。
+controllerのdatabaseは書き込み一方で、既定では
+observation 14日 / transition 90日 / 解決済みincident 180日でpruneされます。
+実測でホスト1台あたり1日約170 MB増えるため、
+既定ならホストあたり約2.4 GBで頭打ちになります。
 
-長期保存が必要な場合:
+長期保存が必要な場合
 
 ```toml
 [retention]
@@ -969,7 +971,7 @@ observations       = "60d"
 resolved_incidents = "never"     # incident は消さない
 ```
 
-ディスクが小さい場合:
+ディスクが小さい場合
 
 ```toml
 [retention]
@@ -977,15 +979,15 @@ observations = "3d"
 interval     = "15m"
 ```
 
-`sentinel prune --dry-run` で、実行前に削除量を確認できます。
+`sentinel prune --dry-run`で、実行前に削除量を確認できます。
 運用手順は [OPERATIONS.md](OPERATIONS.md) を参照してください。
 
-### 9.9 ストレージ構成は書かなくてよい（例外は 3 つ）
+### 9.9 ストレージ構成は書かなくてよい（例外は3つ）
 
-**NFS の依存関係を設定ファイルに書く必要はありません。**
+NFSの依存関係を設定ファイルに書く必要はありません。
 
-agent は毎サイクル自分のマウント表を報告しています。controller はそこから
-fileserver の host entity、storage entity、`provides`、`uses_storage` を
+agentは毎サイクル自分のマウント表を報告しています。controllerはそこから
+ファイルサーバーのホストentity、ストレージentity、`provides`、`uses_storage`を
 すべて組み立てます。ノードを増やしても、マウント先を変えても、
 設定ファイルは触りません。
 
@@ -993,26 +995,26 @@ fileserver の host entity、storage entity、`provides`、`uses_storage` を
 sentinel discover && sentinel dependency list
 ```
 
-止めたい場合は `[discovery.nfs] enabled = false` です。
+止めたい場合は`[discovery.nfs] enabled = false`です。
 
-#### 手で書く必要がある 3 つの場合
+#### 手で書く必要がある3つの場合
 
-**1. マウントが IP で書かれていて、その IP を持つ host を Sentinel が知らない**
+1. マウントがIPで書かれていて、そのIPを持つホストをSentinelが知らない
 
-`10.0.0.9:/data` のようなマウントは、その address を登録している host が
-いれば自動で結び付きます。いなければ **entity は作られません**。
-address は identity ではないため（[ADR 0001](adr/0001-deterministic-entity-identity.md)）、
-`10.0.0.9` という名前の entity を捏造すると、そのマシンが後から自分の名前で
-登録したときに**同じマシンに 2 つの identity ができて**しまうからです。
+`10.0.0.9:/data`のようなマウントは、そのアドレスを登録しているホストが
+いれば自動で結び付きます。いなければentityは作られません。
+アドレスはidentityではないため（[ADR 0001](adr/0001-deterministic-entity-identity.md)）、
+`10.0.0.9`という名前のentityを捏造すると、そのマシンが後から自分の名前で
+登録したときに同じマシンに2つのidentityができてしまうからです。
 
-黙って落とすことはせず、`sentinel discover` が報告します。
+未解決のアドレスを省略せず、`sentinel discover`が報告します。
 
 ```
 NFS mounts that could not be tied to a known host:
   10.0.0.9  mounted by node01, node02
 ```
 
-その host を宣言すれば、以降は自動で解決されます。
+そのホストを宣言すれば、以降は自動で解決されます。
 
 ```toml
 [[entities]]
@@ -1021,9 +1023,9 @@ name = "the-fileserver"
 addresses = ["10.0.0.9"]
 ```
 
-**2. NFS 以外の共有ストレージ**
+2. NFS以外の共有ストレージ
 
-Lustre、GPFS、オブジェクトストレージなど。導出は NFS のマウント表を
+Lustre、GPFS、オブジェクトストレージなど。導出はNFSのマウント表を
 見ているだけなので、それ以外は従来どおり宣言します。
 
 ```toml
@@ -1042,33 +1044,31 @@ to   = "storage/lustre-scratch"
 type = "uses_storage"
 ```
 
-**3. どのノードもマウントしていないが監視したい fileserver**
+3. どのノードもマウントしていないが監視したいファイルサーバー
 
 誰もマウントしていなければマウント表に現れないため、導出されません。
 
-手で書いた宣言は導出結果と**併存**します。打ち消し合いません。
+手で書いた宣言は導出結果と併存します。打ち消し合いません。
 
-#### storage entity の健全性はどこから来るか
+#### ストレージentityの健全性はどこから来るか
 
-storage entity には probe を打つ相手がいません（それは「概念」であって
-マシンではないため）。健全性は**提供元ホストの export 検査**から導かれます。
+ストレージentityにはprobeを実行する相手がいません（それは「概念」であって
+マシンではないため）。健全性は提供元ホストのexport検査から導かれます。
 
-ここで使うのは **server 側の検査だけ**です。1 台のホストが fileserver でも
-NFS クライアントでもありうるので（scratch を export しつつ他所の home を
-マウントする計算ノード）、両者を混ぜると**クライアント側のマウント詰まりが
-「このホストの export が壊れた」として報告され**、人を間違ったマシンに
-送ることになります。
+ここで使うのはサーバー側の検査だけです。1台のホストがファイルサーバーでも
+NFSクライアントでもありうるので（scratchをexportしつつ他所のhomeを
+マウントする計算ノード）、両者を混ぜるとクライアント側のマウント詰まりが
+「このホストのNFS提供に障害がある」と報告され、調査対象を誤る原因になります。
 
-### 9.10 controller に agent を同居させる
+### 9.10 controllerにagentを同居させる
 
-**推奨します。** controller のホスト（多くはヘッドノード）に agent を
-入れていないと、そのホストは**外から到達性を見られるだけ**になります。
-CPU もメモリも NFS マウントも journal も見えません。
-`slurmctld` が乗っている、いちばん落ちてほしくないマシンが
-いちばん手薄になります。
+推奨します。controllerのホスト（多くはヘッドノード）にagentを
+入れていないと、そのホストは外から到達性を見られるだけになります。
+CPUもメモリもNFSマウントもjournalも見えません。
+`slurmctld`を実行するヘッドノードも、agentがいなければ内部の状態を確認できません。
 
-同居させるときは **設定ファイルのパスを分けます**。既定のままだと
-agent の install が controller の `config.toml` を上書きします。
+同居させるときは設定ファイルのパスを分けます。既定のままだと
+agentのinstallがcontrollerの`config.toml`を上書きします。
 
 ```bash
 sudo sentinel install agent --config /etc/sentinel/agent.toml
@@ -1082,13 +1082,13 @@ sudo sentinel install agent --config /etc/sentinel/agent.toml
 | unit | `sentinel-controller.service` | `sentinel-agent.service` |
 | ポート | 7443 | 7444 |
 | 状態ファイル | `sentinel.db` | `spool.db` |
-| credential | `/etc/sentinel/token`（**共用**） | 同左 |
+| credential | `/etc/sentinel/token`（共用） | 同左 |
 
-credential は設定ファイルの隣を見に行くので、同じディレクトリに置く限り
-自動的に共用されます。**agent の install が credential を作ったり
-入れ替えたりすることはありません。**
+credentialは設定ファイルの隣を見に行くので、同じディレクトリに置く限り
+自動的に共用されます。agentのinstallがcredentialを作ったり
+入れ替えたりすることはありません。
 
-書き換えるのは 2 行です。
+書き換えるのは2行です。
 
 ```bash
 sudo sed -i 's/^environment = .*/environment = "my-cluster"/; s/^controller_address = .*/controller_address = "127.0.0.1:7443"/' /etc/sentinel/agent.toml
@@ -1100,14 +1100,14 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sentinel-agent
 
 同居させると、そのホストについて次が自動的に解決します。
 
-- SSH ポートが 22 以外でも、agent が `sshd_config` から読んで報告する
-  （§8 の手作業が不要になる）
-- そのホストの NFS マウントが依存グラフに入る（§9.9）
-- CPU・メモリ・journal・systemd サービスが見えるようになる
+- SSHポートが22以外でも、agentが`sshd_config`から読んで報告する
+  （§8の手作業が不要になる）
+- そのホストのNFSマウントが依存グラフに入る（§9.9）
+- CPU・メモリ・journal・systemdサービスが見えるようになる
 
-> **Ansible の `agents` グループには入れないでください。**
-> ロールは `/etc/sentinel/config.toml` に書き込むため、
-> **controller の設定が上書きされて controller が止まります。**
+> Ansibleの`agents`グループには入れないでください。
+> ロールは`/etc/sentinel/config.toml`に書き込むため、
+> controllerの設定が上書きされてcontrollerが止まります。
 > このホストだけは上の手順で個別に入れてください。
 
 ---
@@ -1115,16 +1115,16 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sentinel-agent
 ## 10. 導入後の確認
 
 ```bash
-# 全 agent が登録されたか
+# 全agentが登録されたか
 curl -fsS http://localhost:7443/v1/health
 
-# 全 entity が想定どおりか
+# 全entityが想定どおりか
 sentinel status
 
 # 依存関係が実構成と一致するか
 sentinel dependency list
 
-# observer が 3 台付いているか。付いていない entity は明示される
+# observerが3台付いているか。付いていないentityは明示される
 sentinel peers
 
 # 誤検知が出ていないか
@@ -1135,27 +1135,27 @@ sentinel diagnose
 
 | 状態 | 意味 |
 | --- | --- |
-| 多くが `HEALTHY` | 正常 |
-| agent 未導入の host が `UNKNOWN` | **正常。** 観測していないものを healthy とは呼びません |
-| `sentinel diagnose` が空 | 正常 |
-| `SLURM_ONLY_DEGRADATION` | 実際に DRAIN されている node があれば正常 |
+| 多くが`HEALTHY` | 正常 |
+| agent未導入のホストが`UNKNOWN` | 正常。観測していないものをhealthyとは呼びません |
+| `sentinel diagnose`が空 | 正常 |
+| `SLURM_ONLY_DEGRADATION` | 実際にDRAINされているノードがあれば正常 |
 
 ### 誤検知が出た場合
 
 | 症状 | 疑うところ |
 | --- | --- |
-| 全 host に `SSH_SERVICE_FAILURE` | SSH ポート（[§8](#8-ssh-ポートが-22-でない場合)） |
-| fileserver に `SLURM_*` | 通常起きません。起きた場合は報告してください |
-| 個別の `NFS_CLIENT_FAILURE` が多発 | storage の依存関係が未記述 |
-| 到達性の診断が一切出ない | observer 不足（`sentinel peers`） |
+| 全ホストに`SSH_SERVICE_FAILURE` | SSHポート（[§8](#8-sshポートが22でない場合)） |
+| ファイルサーバーに`SLURM_*` | 通常起きません。起きた場合は報告してください |
+| 個別の`NFS_CLIENT_FAILURE`が多発 | ストレージの依存関係が検出・設定されているか |
+| 到達性の診断が一切出ない | observer不足（`sentinel peers`） |
 
 ---
 
 ## 11. 設定ファイルテンプレート
 
-**通常は `sentinel install` または `sentinel config init` が生成するファイルを
-使ってください。** 全設定が既定値のまま説明つきで書き出され、
-書き換えが必要な行には `CHANGE-ME` が入っています。
+通常は`sentinel install`または`sentinel config init`が生成するファイルを
+使ってください。全設定が既定値のまま説明つきで書き出され、
+書き換えが必要な行には`CHANGE-ME`が入っています。
 
 ```bash
 sentinel config init --role controller --output /etc/sentinel/config.toml
@@ -1171,27 +1171,27 @@ sentinel config init --role agent --dry-run   # 中身だけ見る
 ```toml
 config_version = 1
 
-# 全 host で一致させること
+# 全ホストで一致させること
 environment = "example-lab"
 
 [controller]
 listen = "0.0.0.0:7443"
 inventory_interval = "5m"
-# controller 自身も観測点として動作する。
-# firewall の内側にいて視界が偏る場合のみ false にする
+# controller自身も観測点として動作する。
+# firewallなどでcontrollerからの通信経路が制限される場合のみfalseにする
 observe = true
 
 [database]
 path = "/var/lib/sentinel/sentinel.db"
 
 [peer_monitoring]
-# 1 entity あたりの observer 数。
-# 0 にすると到達性の診断ができなくなる
+# 1 entityあたりのobserver数。
+# 0にすると到達性の診断ができなくなる
 degree = 3
 
 [discovery.slurm]
 enabled = true
-# scontrol が PATH にない場合のみ
+# scontrolがPATHにない場合のみ
 # scontrol_path = "/opt/slurm/bin/scontrol"
 
 [notification]
@@ -1205,7 +1205,7 @@ min_severity = "warning"
 # ---------------------------------------------------------------------------
 # Scheduler entity
 #
-# Slurm の ClusterName に合わせておくと分かりやすい。
+# SlurmのClusterNameに合わせておくと分かりやすい。
 # 書かない場合は "slurm" になる。
 # ---------------------------------------------------------------------------
 [[entities]]
@@ -1213,10 +1213,10 @@ type = "scheduler"
 name = "example_cluster"
 
 # ---------------------------------------------------------------------------
-# Slurm の外にある host
+# Slurmの外にあるホスト
 #
-# Slurm discovery では見つからないため、ここで宣言する。
-# agent を入れる予定であっても、先に書いておいてよい（merge される）。
+# Slurm自動検出では見つからないため、ここで宣言する。
+# agentを入れる予定であっても、先に書いておいてよい（mergeされる）。
 # ---------------------------------------------------------------------------
 [[entities]]
 type = "host"
@@ -1224,7 +1224,7 @@ name = "filesrv01"
 addresses = ["10.0.0.10"]
 capabilities = ["storage.nfs.server", "observer.peer"]
 labels = { role = "fileserver", rack = "r01" }
-# SSH が 22 以外の場合のみ
+# SSHが22以外の場合のみ
 # ports = { ssh = 2222 }
 
 [[entities]]
@@ -1235,22 +1235,22 @@ capabilities = ["storage.nfs.server", "observer.peer"]
 labels = { role = "fileserver", rack = "r01" }
 
 # ---------------------------------------------------------------------------
-# Storage entity と依存関係
+# Storage entityと依存関係
 #
-# **NFS については、書く必要がありません。**
-# agent が報告するマウント表から、fileserver の host entity、storage entity、
-# provides、uses_storage がすべて自動で導出される。
+# NFSについては、書く必要がありません。
+# agentが報告するマウント表から、ファイルサーバーのホストentity、ストレージentity、
+# provides、uses_storageがすべて自動で導出される。
 # ノードがマウント先を変えても、この設定ファイルを触る必要はない。
 #
 #   確認:  sentinel dependency list
 #   停止:  [discovery.nfs] enabled = false
 #
-# 手で書く必要があるのは §9.9 に挙げた 3 つの例外だけ。
+# 手で書く必要があるのは §9.9に挙げた3つの例外だけ。
 # 手で書いたものは導出結果と併存する（打ち消し合わない）。
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# capability の上書き（必要な場合のみ）
+# capabilityの上書き（必要な場合のみ）
 # ---------------------------------------------------------------------------
 # [capabilities]
 # "storage.nfs.server" = "force"
@@ -1258,33 +1258,33 @@ labels = { role = "fileserver", rack = "r01" }
 
 ### 11.2 Agent (`/etc/sentinel/config.toml`)
 
-**全 agent host で同じ内容で構いません。**
-capability は自動検出されます。
+全agentホストで同じ内容で構いません。
+capabilityは自動検出されます。
 
 ```toml
 config_version = 1
 
-# controller と一致させること
+# controllerと一致させること
 environment = "example-lab"
 
 [agent]
 controller_address = "head01:7443"
 spool_path = "/var/lib/sentinel/spool.db"
 
-# health endpoint。peer がここを見て
-# 「agent だけ落ちた」と「host が落ちた」を区別する
+# health endpoint。peerがここを見て
+# agentのみの停止とホスト全体の停止を区別する
 listen = "0.0.0.0:7444"
 
-# SSH が 22 以外で、かつ sshd_config から読めない場合のみ
+# SSHが22以外で、かつsshd_configから読めない場合のみ
 # ssh_port = 2222
 
-# UI 上のグループ分けにのみ使う。probe を有効化しない
+# UI上のグループ分けにのみ使う。probeを有効化しない
 roles = ["compute"]
 
 # ---------------------------------------------------------------------------
-# この host を peer observer にする場合
+# このホストをpeer observerにする場合
 #
-# observer は互いに異なる障害ドメインから選ぶこと。
+# observerは互いに異なる障害ドメインから選ぶこと。
 # ---------------------------------------------------------------------------
 [capabilities]
 "observer.peer" = "force"
@@ -1322,54 +1322,54 @@ controller_address = "head01:7443"
 
 ### 導入前
 
-- [ ] environment 名を決めた
-- [ ] controller を置く host を決めた
-- [ ] agent を置く host と、置かない host を決めた
-- [ ] observer にする host を 3 台以上決めた（異なる障害ドメイン）
-- [ ] 各 host のアーキテクチャを確認した（`uname -m`。x86_64 / ARM 混在なら host ごと）
-- [ ] クラスタ内通信の NIC を確認した（複数あるなら [§9.7](#97-nic-が複数ある場合vlanbridge複数-fabric)）
-- [ ] storage の依存関係を把握した
-- [ ] SSH ポートを確認した（22 以外なら [§8](#8-ssh-ポートが-22-でない場合)）
-- [ ] agent → controller の network 到達性を確認した
+- [ ] environment名を決めた
+- [ ] controllerを置くホストを決めた
+- [ ] agentを置くホストと、置かないホストを決めた
+- [ ] observerにするホストを3台以上決めた（異なる障害ドメイン）
+- [ ] 各ホストのアーキテクチャを確認した（`uname -m`。x86_64 / ARM混在ならホストごと）
+- [ ] クラスタ内通信のNICを確認した（複数あるなら [§9.7](#97-nicが複数ある場合vlanbridge複数fabric)）
+- [ ] ストレージの依存関係を把握した
+- [ ] SSHポートを確認した（22以外なら [§8](#8-sshポートが22でない場合)）
+- [ ] agent → controllerのネットワーク到達性を確認した
 
-### Controller の host
+### Controllerのホスト
 
-- [ ] release からバイナリを取得し、`sha256sum -c` が通った
-- [ ] `/usr/local/bin/sentinel` に配置し、`sentinel version` が動いた
-- [ ] `sentinel` ユーザーを作成した（`install` より先に）
-- [ ] `sudo sentinel install controller` を実行した
-- [ ] `chown -R sentinel:sentinel /etc/sentinel` した
-- [ ] `config.toml` の `CHANGE-ME` を書き換えた（`environment`）
-- [ ] Slurm の外にある host と storage 依存を宣言した
-- [ ] `sentinel config check` が通った
-- [ ] サービスが起動し、`systemctl status` が正常
-- [ ] `curl .../v1/health` が応答した
+- [ ] releaseからバイナリを取得し、`sha256sum -c`が通った
+- [ ] `/usr/local/bin/sentinel`に配置し、`sentinel version`が動いた
+- [ ] `sentinel`ユーザーを作成した（`install`より先に）
+- [ ] `sudo sentinel install controller`を実行した
+- [ ] `chown -R sentinel:sentinel /etc/sentinel`した
+- [ ] `config.toml`の`CHANGE-ME`を書き換えた（`environment`）
+- [ ] 自動検出されないホストとストレージの依存関係を宣言した
+- [ ] `sentinel config check`が通った
+- [ ] サービスが起動し、`systemctl status`が正常
+- [ ] `curl .../v1/health`が応答した
 
-### Agent を置く各 host
+### Agentを置く各ホスト
 
-- [ ] そのアーキテクチャ用のバイナリを `/usr/local/bin/sentinel` に配置した
-- [ ] `sentinel` ユーザーを作成した（`install` より先に）
-- [ ] `sudo sentinel install agent` を実行した（**警告が出ていないこと**)
-- [ ] controller の `/etc/sentinel/token` を配置した（0400、`sentinel` 所有）
-- [ ] `chown -R sentinel:sentinel /etc/sentinel` した
-- [ ] `config.toml` の `CHANGE-ME` 2 行を書き換えた
-- [ ] `sentinel doctor` の報告アドレスに `!` の警告がない（あれば `interface` を指定）
-- [ ] `sentinel doctor` の capability が想定どおり
-- [ ] `sentinel config check` が通った
-- [ ] サービスが起動し、`systemctl status` が正常
+- [ ] そのアーキテクチャ用のバイナリを`/usr/local/bin/sentinel`に配置した
+- [ ] `sentinel`ユーザーを作成した（`install`より先に）
+- [ ] `sudo sentinel install agent`を実行した（警告が出ていないこと)
+- [ ] controllerの`/etc/sentinel/token`を配置した（0400、`sentinel`所有）
+- [ ] `chown -R sentinel:sentinel /etc/sentinel`した
+- [ ] `config.toml`の`CHANGE-ME` 2行を書き換えた
+- [ ] `sentinel doctor`の報告アドレスに`!`の警告がない（あれば`interface`を指定）
+- [ ] `sentinel doctor`のcapabilityが想定どおり
+- [ ] `sentinel config check`が通った
+- [ ] サービスが起動し、`systemctl status`が正常
 
-### agent を置かない host
+### agentを置かないホスト
 
-- [ ] controller の `config.toml` に `[[entities]]` として宣言した
-- [ ] SSH ポートが 22 以外なら `ports = { ssh = ... }` を書いた
-- [ ] IP を `addresses` で明示した
+- [ ] controllerの`config.toml`に`[[entities]]`として宣言した
+- [ ] SSHポートが22以外なら`ports = { ssh = ... }`を書いた
+- [ ] IPを`addresses`で明示した
 
 ### 全体
 
-- [ ] `curl .../v1/health` で全 agent が登録されている
-- [ ] `sentinel status` が実構成と一致する
-- [ ] `sentinel dependency list` が実 storage 構成と一致する
-- [ ] `sentinel peers` で observer の付いていない entity がない
-- [ ] `sentinel diagnose` に誤検知がない
+- [ ] `curl .../v1/health`で全agentが登録されている
+- [ ] `sentinel status`が実構成と一致する
+- [ ] `sentinel dependency list`が実ストレージ構成と一致する
+- [ ] `sentinel peers`でobserverの付いていないentityがない
+- [ ] `sentinel diagnose`に誤検知がない
 - [ ] 数日おいて誤検知が出ないことを確認した
-- [ ] notification をテスト宛先で確認した
+- [ ] notificationをテスト宛先で確認した

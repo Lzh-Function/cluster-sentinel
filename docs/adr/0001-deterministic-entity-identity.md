@@ -1,60 +1,47 @@
-# ADR 0001 — natural key から決定的に導出する entity identity
+# ADR 0001 Entity IDを識別キーから計算する
 
-* Status: accepted
-* Date: 2026-09-07
-* Milestone: M0
+* 状態 accepted
+* 日付 2026-09-07
+* 開発段階 M0
 
 ## 背景
 
-1 つの entity は複数の provider から独立に発見され得ます。
-Slurm discovery、自己登録した agent、静的設定エントリが同じ host を記述することがあり、
-これらは 3 つではなく 1 つの entity に収束しなければなりません。
+同じホストが、Slurmの自動検出、agentの自己登録、静的設定のそれぞれから見つかる場合があります。
+これらを同じentityとして扱う必要があります。
+`IMPLEMENTATION.md` §38では、内部IDにUUIDを使い、統合用の識別キーを
+`(environment, entity_type, canonical_name)`と定めています。
 
-`IMPLEMENTATION.md` §38 は、内部 ID に UUID を用い、merge 用 natural key を
-`(environment, entity_type, canonical_name)` とすることを要求しています。
-
-素直な実装は「ランダム UUID + natural key への unique index」であり、
-発見のたびに insert-or-lookup を行う方式です。
+ランダムなUUIDと識別キーの一意インデックスを使う方法では、
+発見のたびにDBへ登録するか、既存のIDを検索する処理が必要です。
 
 ## 決定
 
-Entity ID は natural key から導出する **UUIDv5** とします。
-固定の namespace 定数のもとで、key の 3 フィールドを
-`\x1f`（ASCII unit separator）で連結して導出します。
+Entity IDは識別キーから計算するUUIDv5とします。
+固定の名前空間のもとで、3つのフィールドを`\x1f`で連結して計算します。
+`\x1f`はASCIIのunit separatorです。
 
-## 帰結
+## 利点と制限
 
-利点:
+DBに接続せずにIDを計算できます。agentはオフラインでも観測対象のIDを付けられ、
+spoolから再送するときにIDの検索が不要です。
+複数のproviderからの登録を同じ主キーへのupsertにできるため、
+検索と挿入の間に別のproviderが登録する競合も防げます。
+テストデータでも固定のIDを使い、計算結果をgolden testで確認できます。
 
-* DB を参照せずに、任意のコンポーネントが entity ID を計算できます。
-  agent は offline でも observation に対象 entity の ID を付与でき、
-  spool 再送時に lookup の往復が不要です。
-* Merge が「既知の primary key への upsert」になり、
-  並行する provider 間の lookup-then-insert race が消滅します。
-* Test fixture が安定した ID を参照でき、golden test が導出を固定します。
+entityの改名ではIDが変わります。たとえば`node01`から`compute01`へ改名したホストは
+新しいentityとなり、履歴は引き継ぎません。改名は意図して行う頻度の低い操作として扱います。
+将来、運用者が明示的に履歴を統合する機能を追加できる設計です。
+IPアドレスの変更で別のentityになる方式は、変更頻度と影響が大きいため採用しません。
 
-受け入れる欠点:
-
-* **entity の rename は ID を変える。**
-  `node01` から `compute01` へ改名された host は新しい entity となり、履歴は引き継がれません。
-  rename は稀かつ意図的な行為であり、後から運用者主導の明示的 merge を追加できるため、
-  許容します。棄却した代替案が招く「IP 変更による暗黙の identity drift」は
-  はるかに深刻かつ高頻度です。
-* **namespace 定数と separator は永久に凍結される。**
-  いずれかを変更すると既存の全行が孤児化します。
-  この旨は `src/entity/id.rs` にコメントとして明記され、
-  変更しようとすれば golden test が明確に失敗します。
-
-separator は重要です。これが無いと
-`("a", host, "b-c")` と `("a-b", host, "c")` が衝突します。
-まさにこれを検証するテストがあります。
+名前空間の定数と区切り文字は変更しません。変更すると全entityのIDが変わり、
+既存の観測や依存関係から参照できなくなります。
+この制約は`src/entity/id.rs`に記載し、golden testでも確認します。
+区切り文字は、`("a", host, "b-c")`と`("a-b", host, "c")`のようなキーを区別するために必要です。
 
 ## 検討した代替案
 
-**ランダム UUID + unique index。**
-棄却。controller が到達不能な状況でも動作しなければならない経路に
-DB 往復を持ち込むためです。まさにその状況こそ Sentinel が機能し続けるべき局面です。
+ランダムUUIDと一意インデックスを使う方式は、controllerに到達できない間も
+観測を継続する処理にDBへの問い合わせが必要になるため、採用しません。
 
-**natural key を primary key にする。**
-棄却。schema 中のすべての foreign key に、可変で運用者向けの文字列が入り込みます。
-また、将来の「履歴を保持した rename」機能を、未実装どころか実装不可能にします。
+識別キーをそのまま主キーにする方式も採用しません。
+すべての外部キーに変更可能な名前が含まれ、履歴を保持した改名への対応が難しくなるためです。
