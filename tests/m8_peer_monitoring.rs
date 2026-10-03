@@ -103,7 +103,7 @@ fn one_observer_disagreeing_gives_a_path_failure_instead() {
         .find(|d| d.is(kind::PATH_SPECIFIC_NETWORK_FAILURE))
         .expect("diagnosed");
     assert!(path.summary.contains("controller"), "{}", path.summary);
-    assert!(path.summary.contains("the host is up"), "{}", path.summary);
+    assert!(path.summary.contains("から接続できます"), "{}", path.summary);
 }
 
 #[test]

@@ -17,19 +17,31 @@ use crate::time::{now, parse_rfc3339, to_rfc3339, Timestamp};
 use super::{SqliteStore, StoreError};
 
 /// How many rows an ingestion actually inserted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestOutcome {
     /// Observations stored for the first time.
     pub inserted: usize,
     /// Observations already present, and therefore skipped.
     pub duplicates: usize,
+    /// Identifiers first stored by this transaction, for exactly-once state ingestion.
+    pub inserted_ids: Vec<ObservationId>,
 }
 
 impl SqliteStore {
     /// Store observations, ignoring ones already present.
     pub async fn ingest_observations(&self, observations: &[Observation]) -> Result<IngestOutcome, StoreError> {
-        let mut outcome = IngestOutcome::default();
         let mut tx = self.pool().begin().await?;
+        let outcome = self.ingest_observations_in(&mut tx, observations).await?;
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    async fn ingest_observations_in(
+        &self,
+        tx: &mut sqlx::SqliteConnection,
+        observations: &[Observation],
+    ) -> Result<IngestOutcome, StoreError> {
+        let mut outcome = IngestOutcome::default();
         let ingested_at = to_rfc3339(now());
 
         for observation in observations {
@@ -59,13 +71,123 @@ impl SqliteStore {
 
             if result.rows_affected() > 0 {
                 outcome.inserted += 1;
+                outcome.inserted_ids.push(observation.id);
             } else {
                 outcome.duplicates += 1;
             }
         }
 
-        tx.commit().await?;
         Ok(outcome)
+    }
+
+    /// Observations, replay watermarks, hysteresis, state and transitions are
+    /// one commit. A crash cannot consume evidence without applying its state.
+    pub async fn apply_observations(
+        &self,
+        environment: &str,
+        observations: &[Observation],
+        views: &[Observation],
+        engine: &mut crate::state::StateEngine,
+    ) -> Result<(IngestOutcome, Vec<StateTransition>), StoreError> {
+        let latest_valid_time = now() + chrono::Duration::seconds(crate::observation::MAX_FUTURE_SKEW_SECONDS);
+        let mut tx = self.pool().begin().await?;
+        let outcome = self.ingest_observations_in(&mut tx, observations).await?;
+        let accepted: std::collections::HashSet<_> = outcome.inserted_ids.iter().copied().collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut transitions = engine.ingest_all(
+            observations
+                .iter()
+                .filter(|o| accepted.contains(&o.id) && o.finished_at <= latest_valid_time && seen.insert(o.id)),
+        );
+        transitions.extend(
+            engine.ingest_all(
+                views
+                    .iter()
+                    .filter(|o| accepted.contains(&o.id) && o.finished_at <= latest_valid_time),
+            ),
+        );
+        self.save_engine_in(environment, engine, &transitions, &mut tx).await?;
+        tx.commit().await?;
+        Ok((outcome, transitions))
+    }
+
+    pub async fn save_engine(
+        &self,
+        environment: &str,
+        engine: &crate::state::StateEngine,
+        transitions: &[StateTransition],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await?;
+        self.save_engine_in(environment, engine, transitions, &mut tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn save_engine_in(
+        &self,
+        environment: &str,
+        engine: &crate::state::StateEngine,
+        transitions: &[StateTransition],
+        tx: &mut sqlx::SqliteConnection,
+    ) -> Result<(), StoreError> {
+        self.save_state_streams_in(environment, engine, tx).await?;
+        for state in engine.states() {
+            self.save_entity_state_in(state, tx).await?;
+        }
+        for transition in transitions {
+            self.save_state_transition_in(transition, tx).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn save_state_streams(
+        &self,
+        environment: &str,
+        engine: &crate::state::StateEngine,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await?;
+        self.save_state_streams_in(environment, engine, &mut tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn save_state_streams_in(
+        &self,
+        environment: &str,
+        engine: &crate::state::StateEngine,
+        tx: &mut sqlx::SqliteConnection,
+    ) -> Result<(), StoreError> {
+        let streams: Vec<_> = engine.streams().collect();
+        let payload = serde_json::to_string(&streams).map_err(|e| StoreError::Decode {
+            kind: "state streams",
+            detail: e.to_string(),
+        })?;
+        sqlx::query("INSERT INTO state_streams (environment, payload) VALUES (?, ?) ON CONFLICT(environment) DO UPDATE SET payload = excluded.payload")
+            .bind(environment).bind(payload).execute(&mut *tx).await?;
+        Ok(())
+    }
+
+    pub async fn load_state_streams(&self, environment: &str) -> Result<Vec<crate::state::StateStream>, StoreError> {
+        let payload: Option<String> = sqlx::query_scalar("SELECT payload FROM state_streams WHERE environment = ?")
+            .bind(environment)
+            .fetch_optional(self.pool())
+            .await?;
+        payload
+            .map(|p| {
+                serde_json::from_str(&p).map_err(|e| StoreError::Decode {
+                    kind: "state streams",
+                    detail: e.to_string(),
+                })
+            })
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    pub async fn observation_by_id(&self, id: ObservationId) -> Result<Option<Observation>, StoreError> {
+        let row = sqlx::query("SELECT * FROM observations WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(decode_observation).transpose()
     }
 
     /// The most recent observations for one entity, newest first.
@@ -177,14 +299,19 @@ impl SqliteStore {
                         finished_at, duration_ms, status, payload, evidence, error_code, error_message,
                         ROW_NUMBER() OVER (
                             PARTITION BY probe_id, COALESCE(observer_entity_id, '')
-                            ORDER BY finished_at DESC, id DESC
+                            ORDER BY finished_at DESC, rowid DESC
                         ) AS rank
                  FROM observations
-                 WHERE target_entity_id = ?
+                 WHERE target_entity_id = ?1 AND finished_at <= ?2
+                   AND julianday(finished_at) <= julianday(ingested_at) + ?3
              )
              WHERE rank = 1",
         )
         .bind(entity.to_string())
+        .bind(to_rfc3339(
+            now() + chrono::Duration::seconds(crate::observation::MAX_FUTURE_SKEW_SECONDS),
+        ))
+        .bind(crate::observation::MAX_FUTURE_SKEW_SECONDS as f64 / 86400.0)
         .fetch_all(self.pool())
         .await?;
 
@@ -202,9 +329,19 @@ impl SqliteStore {
 
     /// Write an entity's derived state and its component breakdown.
     pub async fn save_entity_state(&self, state: &EntityState) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await?;
+        self.save_entity_state_in(state, &mut tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn save_entity_state_in(
+        &self,
+        state: &EntityState,
+        tx: &mut sqlx::SqliteConnection,
+    ) -> Result<(), StoreError> {
         let id = state.entity.to_string();
         let updated_at = to_rfc3339(state.updated_at);
-        let mut tx = self.pool().begin().await?;
 
         for (component, component_state) in &state.components {
             sqlx::query(
@@ -251,7 +388,6 @@ impl SqliteStore {
         .execute(&mut *tx)
         .await?;
 
-        tx.commit().await?;
         Ok(())
     }
 
@@ -321,6 +457,17 @@ impl SqliteStore {
 
     /// Record a state transition.
     pub async fn save_state_transition(&self, transition: &StateTransition) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await?;
+        self.save_state_transition_in(transition, &mut tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn save_state_transition_in(
+        &self,
+        transition: &StateTransition,
+        tx: &mut sqlx::SqliteConnection,
+    ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO state_transitions (id, entity_id, component, from_health, to_health, occurred_at, evidence)
              VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -333,7 +480,7 @@ impl SqliteStore {
         .bind(transition.to.as_str())
         .bind(to_rfc3339(transition.at))
         .bind(serde_json::to_string(&transition.evidence).unwrap_or_else(|_| "[]".into()))
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
         Ok(())
     }
@@ -586,7 +733,8 @@ mod tests {
             first,
             IngestOutcome {
                 inserted: 2,
-                duplicates: 0
+                duplicates: 0,
+                inserted_ids: batch.iter().map(|o| o.id).collect()
             }
         );
 
@@ -595,7 +743,8 @@ mod tests {
             replay,
             IngestOutcome {
                 inserted: 0,
-                duplicates: 2
+                duplicates: 2,
+                inserted_ids: vec![]
             }
         );
         assert_eq!(store.observation_count(entity).await.expect("count"), 2);
@@ -614,13 +763,8 @@ mod tests {
             .ingest_observations(&[first, observation(entity, ProbeStatus::Failed)])
             .await
             .expect("second");
-        assert_eq!(
-            outcome,
-            IngestOutcome {
-                inserted: 1,
-                duplicates: 1
-            }
-        );
+        assert_eq!((outcome.inserted, outcome.duplicates), (1, 1));
+        assert_eq!(outcome.inserted_ids.len(), 1);
     }
 
     #[tokio::test]

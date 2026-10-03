@@ -46,7 +46,7 @@ impl DebouncePolicy {
 }
 
 /// Tracks consecutive outcomes for one component and derives its health.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Debouncer {
     policy: DebouncePolicy,
     health: Health,
@@ -103,7 +103,11 @@ impl Debouncer {
         let next = if self.consecutive_failures >= self.policy.critical_threshold {
             Health::Unavailable
         } else if self.consecutive_failures >= self.policy.warning_threshold {
-            Health::Degraded
+            if self.health == Health::Unavailable {
+                Health::Unavailable
+            } else {
+                Health::Degraded
+            }
         } else if self.consecutive_successes >= self.policy.recovery_threshold {
             Health::Healthy
         } else {
@@ -136,6 +140,15 @@ impl Debouncer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_after_one_success_does_not_downgrade_an_outage() {
+        let mut debouncer = Debouncer::starting_at(DebouncePolicy::default(), Health::Unavailable);
+        debouncer.observe(false);
+        debouncer.observe(true);
+        debouncer.observe(true);
+        assert_eq!(debouncer.health(), Health::Unavailable);
+    }
 
     #[test]
     fn a_single_failure_does_not_change_health() {

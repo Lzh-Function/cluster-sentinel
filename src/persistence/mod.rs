@@ -14,6 +14,7 @@ mod sqlite;
 
 pub use observations::IngestOutcome;
 pub use retention::{PruneMode, PruneOutcome, MIN_KEEP_PER_ENTITY};
+pub(crate) use sqlite::open_sqlite_pool;
 pub use sqlite::SqliteStore;
 
 use std::path::Path;

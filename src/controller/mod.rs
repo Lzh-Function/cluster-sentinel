@@ -106,10 +106,27 @@ impl Controller {
             engine.seed(state);
         }
 
+        let streams = store.load_state_streams(&config.environment).await?;
+        if streams.is_empty() {
+            // Upgrade old databases: attach source timestamps to legacy state
+            // so old healthy values cannot outlive their observations.
+            for entity in store.load_inventory(&config.environment).await?.entities() {
+                engine.ingest_all(&store.latest_observations(entity.id).await?);
+            }
+        } else {
+            engine.seed_streams(streams);
+        }
+
         // Resume the incidents that were already open, so a restart does not
         // re-alert on everything the operator is already dealing with.
         let mut incidents = IncidentEngine::new();
-        incidents.seed(store.load_active_incidents(&config.environment).await?);
+        let resumable = store.load_resumable_incidents(&config.environment).await?;
+        let active: Vec<_> = resumable.iter().filter(|i| i.status.is_active()).collect();
+        // Backfill candidates for pre-upgrade active incidents. Recent resolved
+        // incidents are resumed for recurrence identity, without inventing old
+        // recovery messages whose original proof is unavailable.
+        store.save_incidents(&config.environment, &active).await?;
+        incidents.seed(resumable);
 
         let storage_providers = storage_providers(&store.load_inventory(&config.environment).await?);
 
@@ -263,7 +280,7 @@ pub fn register_builtin_probes(engine: &mut StateEngine) {
     // A reboot is a recorded fact about the host, and it is not a fault.
     engine.register(
         crate::controller::registration::PROBE_BOOT,
-        ProbeMapping::immediate(StateComponent::Host),
+        ProbeMapping::immediate(StateComponent::Host).informational(),
     );
 }
 

@@ -1,166 +1,129 @@
 # セキュリティ
 
-本書は Sentinel の脅威モデル、v1 で提供する保証、
-そして **意図的に提供しない** ものを記述します。
+本書はSentinelが想定する攻撃、v1の対策と制限を説明します。
 
-## 設計上の立場
+## 監視対象への操作
 
-Sentinel は監視・診断のみを行います。
-**v1 では監視対象を一切変更しません**
-（reboot、`systemctl restart`、mount/remount、`scontrol update` を実行しない）。
-これはセキュリティ上の性質でもあります —
-controller を掌握しても、それが直ちに cluster の制御権にはなりません。
+Sentinelは監視・診断のみを行います。
+v1では、ホストの再起動、`systemctl restart`、mount/remount、
+`scontrol update`など、監視対象を変更する操作を実行しません。
+controllerが侵害されても、SentinelのRPCを使って任意の操作は実行できません。
 
 ## 脅威モデル
 
-想定する攻撃者:
-
 | 攻撃者 | 想定される行為 | 対策 |
 | --- | --- | --- |
-| cluster network 上の受動的観測者 | agent–controller 間トラフィックの読み取り | TLS（デプロイ時に設定。後述） |
-| cluster network 上の能動的攻撃者 | 偽 observation の注入、controller への成りすまし | cluster credential による認証 |
-| 監視対象 host 上のローカルユーザー | agent 経由での特権昇格 | agent は read-only、専用ユーザー、remote 実行なし |
-| controller を掌握した攻撃者 | agent への命令 | **RPC に命令が存在しない**（後述） |
+| クラスタ内の通信を盗聴できる者 | agentとcontrollerの通信を読み取る | TLS。導入時に設定する |
+| クラスタ内の通信に介入できる者 | 偽の観測結果を送る、controllerになりすます | クラスタ共有credentialによる認証とTLSの証明書検証 |
+| 監視対象ホストのローカルユーザー | agentを使って権限を取得する | 専用ユーザー、読み取り専用の検査、遠隔コマンド実行の禁止 |
+| controllerを侵害した者 | agentへ任意のコマンドを送る | RPCにコマンド実行機能を設けない |
 
-想定 **しない** 攻撃者: cluster の root を既に取得している者。
-その段階では Sentinel は防御境界ではありません。
+クラスタのroot権限を既に取得した攻撃者に対する防御は、対象外です。
 
-## Remote 実行は存在しない
+## 遠隔コマンド実行
 
-これは規約ではなく、**型で保証された性質** です。
+通信プロトコルには、実行コマンドを指定する型がありません。
+probeはバイナリにコンパイルされており、controllerがagentへ送れる指示は再登録だけです。
+次のテストで、コマンドの指定と実行経路がないことを確認します。
 
-Sentinel の wire protocol には、実行すべきコマンドを表現できる型が存在しません。
-Probe はバイナリへ static compile されており、controller が agent へ送れるのは
-「登録し直せ」という指示のみです。
+* `protocol::tests::the_protocol_cannot_express_a_command_to_run`は、通信形式に`command`、`exec`、`script`、`shell`、`argv`が含まれないことを検査します。
+* `api::tests::there_is_no_route_that_executes_anything`は、`/v1/exec`などの経路が404を返すことを検査します。
 
-以下 2 つのテストがこれを強制します。
-
-* `protocol::tests::the_protocol_cannot_express_a_command_to_run`
-  — wire 表現に `command` / `exec` / `script` / `shell` / `argv` が現れないこと。
-* `api::tests::there_is_no_route_that_executes_anything`
-  — `/v1/exec` 等の route が 404 であること。
-
-CLI 側にも同様のテストがあり、`sentinel exec` / `run` / `restart` /
-`reboot` / `drain` / `resume` といったサブコマンドが存在しないことを検査します。
+CLIにも同様のテストがあり、`sentinel exec`、`run`、`restart`、`reboot`、
+`drain`、`resume`といったサブコマンドがないことを検査します。
 
 ## 認証
 
-**未認証での動作は提供しません。** credential 無しで
-`sentinel controller` / `sentinel agent` を起動すると、
-デフォルトへフォールバックせずに起動を拒否します。
-
-v1 は cluster 単位の bearer credential を用います。
+credentialなしでは`sentinel controller`と`sentinel agent`は起動しません。
+v1では、クラスタ単位で共有するbearer credentialを使います。
 
 ```bash
-# 推奨: ファイルから読む（パーミッションを設定でき、process table に出ない）
+# 推奨。権限を設定でき、プロセス一覧に値が表示されない
 export SENTINEL_TOKEN_FILE=/etc/sentinel/token
 
-# 代替: 環境変数
+# 環境変数で指定する場合
 export SENTINEL_TOKEN=...
 ```
 
-`SENTINEL_TOKEN_FILE` が `SENTINEL_TOKEN` より優先されます。
-ファイルが読めない場合は環境変数へフォールバック **しません** —
-設定ミスを隠すことになるためです。
+`SENTINEL_TOKEN_FILE`を`SENTINEL_TOKEN`より優先します。
+指定したファイルが読めない場合は、設定ミスを検出するため、環境変数へ切り替えません。
 
-credential の生成例:
+credentialの生成例
 
 ```bash
 head -c 32 /dev/urandom | base64
 ```
 
-32 文字未満の credential は警告されます。
-credential 比較は constant-time で行い、
-prefix がタイミングから漏れないようにしています。
-`Debug` 出力は常に redact されるため、ログへ漏れません。
+32文字未満のcredentialには警告を出します。
+credentialの比較は一定時間で行い、処理時間から値を推測されるのを防ぎます。
+`Debug`出力では値を伏せます。バイナリにsecretを埋め込みません。
 
-**バイナリへ secret を埋め込むことはありません。**
+### 共有credentialの制限
 
-### 既知の限界と将来の方向
+共有credentialを取得した攻撃者は、任意のホストになりすまして偽の観測結果を送信できます。
+mutual TLSを設定すると、tokenに加えてクライアント証明書が必要になります。
+ノード別credentialは未実装です。`IMPLEMENTATION.md` §65に従い、
+認証を使う側の処理を変えずに方式を追加できる設計です。
 
-cluster 単位の共有 credential は *下限* であり、目標ではありません。
-これを掌握した攻撃者は、任意の host になりすまして偽 observation を注入できます。
+## 通信の保護
 
-**mutual TLS を設定すれば、token 単独では不十分になります**（下記）。
-per-node credential そのものは未実装で、
-`IMPLEMENTATION.md` §65 の要求どおり呼び出し側を変えずに置換できる形にしてあります。
+TLSは組み込みです。`[tls]`に`cert`と`key`を設定すると、controllerはTLSで待ち受けます。
+設定項目は[設定リファレンス](CONFIGURATION.md#tls)を参照してください。
 
-## 転送路の保護
-
-TLS は組み込みです。`[tls]` に `cert` と `key` を設定すると、
-controller は TLS で listen します。設定 reference は
-[`CONFIGURATION.md`](CONFIGURATION.md) の `[tls]` を参照してください。
-
-3 つの構成があり、いずれも追加的です。
-
-| 構成 | 設定 | 守れるもの |
+| 構成 | 設定 | 保護の範囲 |
 | --- | --- | --- |
-| 平文 | なし | なし（隔離された管理 network 前提） |
-| TLS | `cert` + `key` | 受動的な盗聴。credential が wire に出なくなる |
-| mutual TLS | + `client_ca` | 上記に加え、**token の漏洩**。証明書がなければ token を出すことすらできない |
+| 平文HTTP | なし | 通信の暗号化なし。隔離された管理ネットワークを前提とする |
+| TLS | `cert`と`key` | 通信を暗号化し、credentialの盗聴を防ぐ |
+| mutual TLS | 上記に`client_ca`を追加 | tokenだけでは認証できず、クライアント証明書も必要になる |
 
-`client_ca` を設定した時点で client 証明書は**必須**になります。
-任意の client 認証はセキュリティのように読めて何も守りません
-（攻撃者は提示しないだけです）。
-
-TLS 材料が読めない場合、controller は**起動に失敗します**。
-平文で起動して「暗号化されている」と誤解されるのが最悪の失敗形だからです。
-
-平文で listen している間は、起動のたびに警告を出します。
+`client_ca`を設定すると、クライアント証明書の提示は必須です。
+提示を任意にすると、証明書を持たない攻撃者も接続できるためです。
+証明書や秘密鍵が読めない場合は起動に失敗し、平文HTTPへ切り替えません。
+平文HTTPで待ち受ける場合は、起動時に警告を出します。
 
 ### `insecure_skip_verify`
 
-証明書を検証せずに接続します。これは TLS を装飾に変えます。
-接続を横取りできる攻撃者は任意の証明書を提示でき、credential はそのまま読まれます。
+証明書を検証せずに接続する設定です。
+通信に介入できる攻撃者が任意の証明書を提示し、credentialを取得できてしまいます。
+PKIの準備前に接続を試すために用意しています。有効な間は警告を出します。
 
-PKI より先に cluster が立ち上がる現実のために用意してあります。
-文書化された switch のほうが、平文 HTTP に戻して忘れられるより安全だからです。
-有効な間は該当 node の log に毎回警告が出ます。
+### 証明書の発行
 
-### 証明書の自動生成はしません
+Sentinelは証明書を自動生成しません。
+CAの管理と監査をSentinelとは別に行うため、既存の証明書発行手順を使ってください。
 
-監視システムが自前の trust anchor を発行すれば、
-誰も監査しない private CA が 1 つ増えるだけです。
-TLS を要求する現場には、既に証明書を発行する手段があります。
+### agentのhealth endpoint
 
-### agent の health endpoint は平文のまま
+agentのhealth endpointにはTLSを適用していません。
+credentialを送信せず、agentが応答しているかを確認する情報だけを返します。
+実装は`src/agent/rpc.rs`にあります。
 
-agent の RPC endpoint（`GET /health`）には TLS を適用していません。
-credential を運ばず、liveness 以外を明かさず、
-route は 1 本の GET しかないためです（`agent/rpc.rs`）。
-盗聴者が得るものは「その agent は生きている」だけであり、
-これは到達性を確認する誰にでも分かることです。
+## 外部コマンド
 
-## 外部コマンドの実行
-
-Probe が起動できるプログラムは allowlist に載ったものだけです
-（`src/command/allowlist.rs`）。
-
-* allowlist は **ファイル名** で照合します。
-  `/opt/slurm/bin/scontrol` は許可されますが、`/opt/scontrol/rm` は許可されません
-  — ディレクトリがプログラムを認可することはありません。
-* `sh` / `bash` / `rm` / `dd` / `mount` / `reboot` / `scancel` / `srun` は
-  **決して** allowlist に載りません。テストで検査しています。
-* すべての外部コマンドは timeout と出力サイズ上限のもとで実行されます。
-  truncate した場合はその事実を observation に記録します。
+probeが起動できるプログラムは、`src/command/allowlist.rs`の許可リストに限定します。
+照合するのは実行ファイル名です。`/opt/slurm/bin/scontrol`は許可しますが、
+`/opt/scontrol/rm`は許可しません。
+`sh`、`bash`、`rm`、`dd`、`mount`、`reboot`、`scancel`、`srun`を
+許可リストに追加しないことを、テストで確認します。
+外部コマンドにはタイムアウトと出力サイズの上限を設定し、出力を省略した場合は記録します。
 
 ## 権限
 
-agent は専用の非特権ユーザーで動作させることを推奨します。
-以下は追加権限が必要になり得ますが、いずれも任意です。
+agentは専用の非特権ユーザーで実行することを推奨します。
+次の機能では追加権限が必要になる場合があります。
 
 | 機能 | 必要な権限 |
 | --- | --- |
-| SMART / NVMe | デバイスへの読み取り権限 |
-| 一部の journal 読み取り | `systemd-journal` グループ |
-| BMC / IPMI（v1 対象外） | out-of-band network アクセス |
+| SMART / NVMe | デバイスの読み取り権限 |
+| 一部のjournal読み取り | `systemd-journal`グループ |
+| BMC / IPMI。v1対象外 | 別系統の管理ネットワークへのアクセス |
 
-これらが無い場合、該当 probe は `UNSUPPORTED` を返します。
-`FAILED` ではありません — 見る権限が無いことは、壊れていることとは異なります。
+権限が不足する検査は`UNSUPPORTED`を返します。
+読み取れないことだけを理由に、対象を`FAILED`とは判定しません。
 
-## systemd hardening
+## systemdの権限制限
 
-生成する unit には以下を設定します（`IMPLEMENTATION.md` §85）。
+生成するunitには、`IMPLEMENTATION.md` §85に従って次を設定します。
 
 ```ini
 NoNewPrivileges=true
@@ -173,12 +136,11 @@ RestrictSUIDSGID=true
 ReadWritePaths=/var/lib/sentinel /run/sentinel
 ```
 
-## ログに書かないもの
+## ログへの出力
 
-* credential・token の類（`Debug` 実装が redact します）
-* 外部コマンドの大量出力（evidence として保存し、保持上限を適用します）
+credentialやtokenの値はログに書きません。`Debug`出力では値を伏せます。
+外部コマンドの大量出力もログに書かず、保持上限を設けて観測の根拠として保存します。
 
 ## 脆弱性の報告
 
-セキュリティ上の問題は public issue ではなく、
-リポジトリ管理者へ直接連絡してください。
+セキュリティ上の問題は公開issueに記載せず、リポジトリ管理者へ直接連絡してください。

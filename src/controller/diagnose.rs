@@ -11,7 +11,7 @@ use crate::diagnosis::{Diagnosis, DiagnosisContext, ObservationIndex};
 use crate::entity::EntityId;
 use crate::incident::IncidentUpdate;
 use crate::persistence::StoreError;
-use crate::state::{Classification, EntityState};
+use crate::state::{Classification, EntityState, Health};
 
 use super::Controller;
 
@@ -46,17 +46,44 @@ fn freshness_horizons(config: &crate::config::Config) -> HashMap<String, chrono:
     horizons
 }
 
+// Controller observations run during discovery; peer probes run on their own
+// schedule. Using a five-second peer cadence for both expires the controller's
+// vote between inventory sweeps.
+fn horizon_for(
+    probe: &str,
+    observer: Option<EntityId>,
+    controller: Option<EntityId>,
+    horizons: &HashMap<String, chrono::Duration>,
+    fallback: chrono::Duration,
+) -> chrono::Duration {
+    let probe_horizon = horizons.get(probe).copied().unwrap_or(fallback);
+    if observer.is_some() && observer == controller {
+        probe_horizon.max(fallback)
+    } else {
+        probe_horizon
+    }
+}
+
 impl Controller {
     /// Run every diagnosis rule against the current picture.
     pub async fn diagnose(&self) -> Result<Vec<Diagnosis>, StoreError> {
         let environment = self.config().environment.clone();
         let inventory = self.store().load_inventory(&environment).await?;
 
+        let horizons = freshness_horizons(self.config());
+        let fallback = chrono::Duration::from_std(self.config().controller.inventory_interval * STALE_AFTER_INTERVALS)
+            .unwrap_or_else(|_| chrono::Duration::hours(1));
+        let observer = self.observer_entity();
+        let mut current_engine = self.engine().clone();
+        current_engine.expire(crate::time::now(), |s| {
+            horizon_for(s.probe.as_str(), s.observer, observer, &horizons, fallback)
+        });
+
         // Prefer the live state engine over the database: it is what the
         // observations in this cycle have just updated, and reloading would
         // race with the write.
         let mut states: HashMap<EntityId, EntityState> =
-            self.engine().states().map(|s| (s.entity, s.clone())).collect();
+            current_engine.states().map(|s| (s.entity, s.clone())).collect();
         if states.is_empty() {
             states = self
                 .store()
@@ -70,17 +97,18 @@ impl Controller {
         // rather than weighed: a rule cannot tell a stale answer from a
         // current one, and every rule here treats what it is given as the
         // present.
-        let horizons = freshness_horizons(self.config());
-        // Observations this controller produces itself arrive once per
-        // discovery cycle, not on a probe schedule.
-        let fallback = chrono::Duration::from_std(self.config().controller.inventory_interval * STALE_AFTER_INTERVALS)
-            .unwrap_or_else(|_| chrono::Duration::hours(1));
         let now = crate::time::now();
 
         let mut observations = ObservationIndex::new();
         for entity in inventory.entities() {
             for observation in self.store().latest_observations(entity.id).await? {
-                let horizon = horizons.get(observation.probe_id.as_str()).copied().unwrap_or(fallback);
+                let horizon = horizon_for(
+                    observation.probe_id.as_str(),
+                    observation.observer_entity,
+                    observer,
+                    &horizons,
+                    fallback,
+                );
                 if now - observation.finished_at <= horizon {
                     observations.insert(observation);
                 }
@@ -106,11 +134,27 @@ impl Controller {
     /// Every entity is rewritten, including the ones this cycle said nothing
     /// about: a diagnosis that no longer fires must take its label with it.
     pub async fn diagnose_and_classify(&mut self) -> Result<Vec<Diagnosis>, StoreError> {
+        let previous = self.engine.clone();
+        let result = self.diagnose_and_classify_inner().await;
+        if result.is_err() {
+            self.engine = previous;
+        }
+        result
+    }
+
+    async fn diagnose_and_classify_inner(&mut self) -> Result<Vec<Diagnosis>, StoreError> {
+        let horizons = freshness_horizons(self.config());
+        let fallback = chrono::Duration::from_std(self.config().controller.inventory_interval * STALE_AFTER_INTERVALS)
+            .unwrap_or_else(|_| chrono::Duration::hours(1));
+        let observer = self.observer_entity();
+        let transitions = self.engine_mut().expire(crate::time::now(), |s| {
+            horizon_for(s.probe.as_str(), s.observer, observer, &horizons, fallback)
+        });
         let diagnoses = self.diagnose().await?;
 
         let mut implied: BTreeMap<EntityId, Vec<Classification>> = BTreeMap::new();
         for diagnosis in &diagnoses {
-            let Some(classification) = crate::diagnosis::rules::slurm::classification_for(diagnosis) else {
+            let Some(classification) = crate::diagnosis::classification_for(diagnosis) else {
                 continue;
             };
             for entity in &diagnosis.affected_entities {
@@ -129,9 +173,9 @@ impl Controller {
             }
         }
 
-        for state in self.engine().states() {
-            self.store().save_entity_state(state).await?;
-        }
+        self.store()
+            .save_engine(&self.config().environment, self.engine(), &transitions)
+            .await?;
 
         Ok(diagnoses)
     }
@@ -147,12 +191,129 @@ impl Controller {
         let inventory = self.store().load_inventory(&environment).await?;
         let states: BTreeMap<EntityId, EntityState> = self.engine().states().map(|s| (s.entity, s.clone())).collect();
 
-        let update = self.incidents.reconcile(&diagnoses, inventory.graph(), &states);
-
-        for incident in update.all() {
-            self.store().save_incident(&environment, incident).await?;
+        let horizons = freshness_horizons(self.config());
+        let fallback = chrono::Duration::from_std(self.config().controller.inventory_interval * STALE_AFTER_INTERVALS)
+            .unwrap_or_else(|_| chrono::Duration::hours(1));
+        let observer = self.observer_entity();
+        let at = crate::time::now();
+        let mut latest = ObservationIndex::new();
+        for entity in inventory.entities() {
+            for o in self.store().latest_observations(entity.id).await? {
+                if at - o.finished_at
+                    <= horizon_for(o.probe_id.as_str(), o.observer_entity, observer, &horizons, fallback)
+                {
+                    latest.insert(o);
+                }
+            }
         }
-
+        let mut verdicts = BTreeMap::new();
+        let diagnosed: std::collections::BTreeSet<_> = diagnoses.iter().map(crate::incident::fingerprint).collect();
+        for incident in self.incidents.active().filter(|i| !diagnosed.contains(&i.fingerprint)) {
+            let mut originals = Vec::new();
+            for id in &incident.evidence {
+                if let Some(o) = self.store().observation_by_id(*id).await? {
+                    originals.push(o);
+                } else {
+                    originals.clear();
+                    break;
+                }
+            }
+            let roots: std::collections::BTreeSet<_> = incident.suspected_root_entities.iter().copied().collect();
+            let verified = |root_only: bool| {
+                if originals.is_empty() {
+                    return false;
+                }
+                let selected: Vec<_> = originals
+                    .iter()
+                    .filter(|o| {
+                        o.status.is_conclusive()
+                            && o.probe_id.as_str() != crate::controller::registration::PROBE_BOOT
+                            && (!root_only || roots.contains(&o.target_entity))
+                    })
+                    .collect();
+                // A conceptual service can be rooted at a daemon but measured
+                // through the scheduler/host. Its evidence remains mandatory.
+                let selected = if selected.is_empty() {
+                    originals
+                        .iter()
+                        .filter(|o| {
+                            o.status.is_conclusive()
+                                && o.probe_id.as_str() != crate::controller::registration::PROBE_BOOT
+                        })
+                        .collect()
+                } else {
+                    selected
+                };
+                !selected.is_empty()
+                    && !diagnoses.iter().any(|d| {
+                        d.affected_entities.iter().any(|e| {
+                            if root_only {
+                                roots.contains(e)
+                            } else {
+                                incident.affected_entities.contains(e) || roots.contains(e)
+                            }
+                        })
+                    })
+                    && selected.iter().all(|old| {
+                        // Host unreachability is a quorum statement, not a fault
+                        // of one observer's path. A new healthy quorum can replace
+                        // observers that have been reassigned.
+                        if old.probe_id.as_str() == crate::probes::network::PROBE_ID
+                            && incident.has_diagnosis(crate::diagnosis::kind::HOST_UNREACHABLE)
+                        {
+                            let views = latest.all(old.target_entity, old.probe_id.as_str());
+                            let remote: Vec<_> = views
+                                .iter()
+                                .filter(|o| {
+                                    o.observer_entity.is_some()
+                                        && o.observer_entity != Some(old.target_entity)
+                                        && o.status.is_conclusive()
+                                })
+                                .collect();
+                            return remote.len() >= 2
+                                && remote.iter().all(|o| {
+                                    o.status == crate::observation::ProbeStatus::Ok
+                                        && o.finished_at > old.finished_at
+                                        && self.engine().confirms_health(o)
+                                });
+                        }
+                        latest.all(old.target_entity, old.probe_id.as_str()).iter().any(|new| {
+                            new.observer_entity == old.observer_entity
+                                && self.engine().confirms_health(new)
+                                && new.status == crate::observation::ProbeStatus::Ok
+                                && (new.finished_at > old.finished_at
+                                    || (!old.status.is_bad()
+                                        && old.status != crate::observation::ProbeStatus::Degraded))
+                        })
+                    })
+                    && incident
+                        .affected_entities
+                        .iter()
+                        .chain(&incident.suspected_root_entities)
+                        .filter(|e| !root_only || roots.contains(e))
+                        .all(|e| {
+                            states
+                                .get(e)
+                                .map(|s| {
+                                    s.overall == Health::Healthy
+                                        || (s.overall == Health::Unknown
+                                            && selected.iter().any(|o| o.target_entity == *e))
+                                })
+                                .unwrap_or_else(|| {
+                                    inventory
+                                        .get(*e)
+                                        .is_some_and(|entity| entity.entity_type == crate::entity::EntityType::Service)
+                                })
+                        })
+            };
+            verdicts.insert(incident.id, (verified(true), verified(false)));
+        }
+        let mut candidate = self.incidents.clone();
+        let update = candidate.reconcile_verified(&diagnoses, inventory.graph(), |i| {
+            verdicts.get(&i.id).copied().unwrap_or((false, false))
+        });
+        self.store().save_incidents(&environment, &update.all()).await?;
+        self.incidents = candidate;
         Ok((diagnoses, update))
     }
 }

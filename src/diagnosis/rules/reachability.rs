@@ -88,7 +88,7 @@ pub fn verdicts_by_target(context: &DiagnosisContext) -> BTreeMap<EntityId, Verd
         let mut verdicts = Verdicts::default();
 
         for observation in context.observations.for_entity(host.id) {
-            if observation.probe_id.as_str() != NETWORK_PROBE {
+            if observation.probe_id.as_str() != NETWORK_PROBE || !observation.status.is_conclusive() {
                 continue;
             }
             let Some(observer) = observation.observer_entity else {
@@ -182,16 +182,17 @@ impl DiagnosisRule for HostUnreachable {
                     .rooted_at([target])
                     .with_evidence(evidence_for(context, target))
                     .with_summary(format!(
-                        "{} is unreachable from all {} observers",
+                        "{}について、観測した{}か所すべてからネットワーク応答を得られていません。電源の状態は、この結果だけでは分かりません。",
                         entity.canonical_name,
                         verdicts.failed.len()
                     ))
                     .recommending(vec![
-                        format!("sentinel entity show {}", entity.canonical_name),
+                        crate::diagnosis::investigation::entity(entity),
+                        crate::diagnosis::investigation::observations(entity, NETWORK_PROBE, "監視元ごとの接続先・ポート・結果・観測時刻を確認してください"),
                         // Deliberately phrased as a question, not a conclusion.
                         // Sentinel cannot see power state and does not pretend
                         // to (SPEC.md §52).
-                        format!("check console or BMC for {}", entity.canonical_name),
+                        format!("{}のコンソールやBMCで、電源状態、OSの応答、NICのリンク状態を確認してください。BMCにも接続できない場合は、管理ネットワークや共通のスイッチの状態を確認してください。", entity.canonical_name),
                     ]),
             );
         }
@@ -248,14 +249,17 @@ impl DiagnosisRule for PathSpecificNetworkFailure {
                     .rooted_at(roots)
                     .with_evidence(evidence_for(context, target))
                     .with_summary(format!(
-                        "{} is unreachable from {} but reachable from {}; the host is up and the path is at fault",
+                        "{}には{}から接続できますが、{}からは接続できません。監視元によって結果が異なるため、接続できない側のネットワーク経路を確認してください。",
                         entity.canonical_name,
-                        blind.join(", "),
-                        seeing.join(", ")
+                        seeing.join("、"),
+                        blind.join("、")
                     ))
                     .recommending(vec![
-                        format!("sentinel entity show {}", entity.canonical_name),
-                        "sentinel peers".to_string(),
+                        crate::diagnosis::investigation::entity(entity),
+                        crate::diagnosis::investigation::observations(entity, NETWORK_PROBE, "接続できる監視元とできない監視元の接続先・ポート・結果・観測時刻を比較してください"),
+                        crate::diagnosis::investigation::step("Sentinel controller", "peerの最終応答時刻と監視状態を確認してください", &crate::diagnosis::investigation::sentinel("peers")),
+                        crate::diagnosis::investigation::step(&format!("接続に失敗している監視元（{}）", blind.join("、")), "IPアドレス、インターフェースの状態、対象ホストへの経路を確認してください", "ip -br address\nip route"),
+                        format!("接続できない監視元から{}までのファイアウォール・VLAN・スイッチ設定を、接続できる監視元と比較してください。接続先アドレスとポートは、上の観測結果を使ってください。", entity.canonical_name),
                     ]),
             );
         }
@@ -351,6 +355,17 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_observers_are_neither_reached_nor_failed_votes() {
+        let mut world = World::new(&["target", "a", "b"]).saw("a", "target", false);
+        world.observations.insert(
+            Observation::new(ProbeId::new(NETWORK_PROBE), host("target"), ProbeStatus::Unsupported)
+                .with_observer(host("b")),
+        );
+        assert!(world.evaluate(&HostUnreachable).is_empty());
+        assert!(world.evaluate(&PathSpecificNetworkFailure).is_empty());
+    }
+
+    #[test]
     fn all_observers_failing_justifies_host_unreachable() {
         // SPEC.md §51.
         let world = World::new(&["target", "a", "b", "c"])
@@ -428,7 +443,7 @@ mod tests {
         assert!(diagnoses[0].is(kind::PATH_SPECIFIC_NETWORK_FAILURE));
         assert!(diagnoses[0].summary.contains("controller"), "{}", diagnoses[0].summary);
         assert!(
-            diagnoses[0].summary.contains("the host is up"),
+            diagnoses[0].summary.contains("から接続できます"),
             "{}",
             diagnoses[0].summary
         );
@@ -529,10 +544,7 @@ mod tests {
             .saw("b", "target", false);
         let actions = &world.evaluate(&HostUnreachable)[0].recommended_actions;
 
-        assert!(
-            actions.iter().any(|a| a.contains("check console or BMC")),
-            "{actions:?}"
-        );
+        assert!(actions.iter().any(|a| a.contains("コンソールやBMC")), "{actions:?}");
         for action in actions {
             for mutating in ["reboot", "power on", "ipmitool power", "restart"] {
                 assert!(!action.contains(mutating), "recommended a mutating command: {action}");

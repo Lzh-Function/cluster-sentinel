@@ -213,7 +213,7 @@ async fn a_real_incident_produces_exactly_one_notification() {
     let sent = sent.lock().await;
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].trigger, Trigger::Opened);
-    assert!(sent[0].body.contains("export port"), "{}", sent[0].body);
+    assert!(sent[0].body.contains("NFSの接続確認に失敗"), "{}", sent[0].body);
 }
 
 #[tokio::test]
@@ -496,9 +496,12 @@ async fn a_notification_carries_enough_to_act_on_without_logging_in() {
     let notification = &sent[0];
 
     assert!(!notification.title.is_empty());
-    assert!(notification.body.contains("Incident:"), "an id to look up");
     assert!(
-        notification.body.contains("Evidence:"),
+        notification.body.contains(&notification.incident_id),
+        "an id to look up"
+    );
+    assert!(
+        notification.body.contains("根拠となる観測"),
         "and how much evidence there is"
     );
     assert!(

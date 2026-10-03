@@ -85,20 +85,7 @@ impl Spool {
             }
         }
 
-        let options = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", path.display()))?
-            .create_if_missing(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-            .busy_timeout(Duration::from_secs(5));
-
-        Self::from_pool(
-            SqlitePoolOptions::new()
-                .max_connections(2)
-                .connect_with(options)
-                .await?,
-            limits,
-        )
-        .await
+        Self::from_pool(crate::persistence::open_sqlite_pool(path, 2).await?, limits).await
     }
 
     /// Open an in-memory spool, for tests.

@@ -40,7 +40,7 @@ impl ObservationIndex {
             observation.observer_entity,
         );
         match self.latest.get(&key) {
-            Some(existing) if existing.finished_at >= observation.finished_at => {}
+            Some(existing) if existing.finished_at > observation.finished_at => {}
             _ => {
                 self.latest.insert(key, observation);
             }
@@ -67,7 +67,7 @@ impl ObservationIndex {
             .iter()
             .filter(|((e, p, _), _)| *e == entity && *p == probe)
             .map(|(_, o)| o)
-            .max_by_key(|o| o.finished_at)
+            .max_by_key(|o| (o.finished_at, o.observer_entity, o.id))
     }
 
     /// Every observer's latest observation of one probe against one entity.
@@ -159,7 +159,9 @@ impl DiagnosisContext<'_> {
 
     /// The latest observation of one probe against one entity.
     pub fn observation(&self, entity: EntityId, probe: &str) -> Option<&Observation> {
-        self.observations.latest(entity, probe)
+        self.observations
+            .latest(entity, probe)
+            .filter(|o| o.status.is_conclusive())
     }
 
     /// A boolean field from a probe's latest payload.

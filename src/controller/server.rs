@@ -48,6 +48,7 @@ pub struct ServerHandle {
     server: tokio::task::JoinHandle<std::io::Result<()>>,
     discovery: Option<tokio::task::JoinHandle<()>>,
     diagnosis: Option<tokio::task::JoinHandle<()>>,
+    notification: Option<tokio::task::JoinHandle<()>>,
     retention: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -55,7 +56,10 @@ impl ServerHandle {
     /// Ask the server to stop and wait for it (SPEC.md §84).
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
-        for task in [self.discovery, self.diagnosis, self.retention].into_iter().flatten() {
+        for task in [self.discovery, self.diagnosis, self.notification, self.retention]
+            .into_iter()
+            .flatten()
+        {
             task.abort();
             let _ = task.await;
         }
@@ -151,8 +155,12 @@ pub async fn serve(controller: Controller, options: ServeOptions) -> anyhow::Res
     // mean a fault waits for the next inventory sweep before anyone is told.
     let diagnosis = diagnosis_interval.map(|interval| {
         let controller = Arc::clone(&controller);
-        let providers = providers.clone();
-        tokio::spawn(async move { diagnosis_loop(controller, interval, providers).await })
+        tokio::spawn(async move { diagnosis_loop(controller, interval).await })
+    });
+
+    let notification = diagnosis_interval.filter(|_| !providers.is_empty()).map(|interval| {
+        let controller = Arc::clone(&controller);
+        tokio::spawn(async move { notification_loop(controller, interval, providers).await })
     });
 
     // Pruning is last to start and first to be skippable: it is the only loop
@@ -169,6 +177,7 @@ pub async fn serve(controller: Controller, options: ServeOptions) -> anyhow::Res
         server,
         discovery,
         diagnosis,
+        notification,
         retention,
     })
 }
@@ -240,34 +249,11 @@ async fn active_maintenance(controller: &Controller) -> MaintenanceWindows {
     }
 }
 
-/// Diagnose, correlate and notify on a schedule.
+/// Diagnose and correlate independently of provider delivery.
 ///
 /// Reads only what is already stored, so it is cheap enough to run often. This
 /// interval is what decides how long a fault goes unreported.
-async fn diagnosis_loop(
-    controller: Arc<Mutex<Controller>>,
-    interval: std::time::Duration,
-    providers: Vec<Arc<dyn NotificationProvider>>,
-) {
-    // Notification state lives with the loop, but not only in it: the
-    // deduplicator is seeded from what was actually delivered, so a restart
-    // neither re-announces incidents the operator already heard about nor
-    // permanently silences ones that were never successfully announced.
-    let mut deduplicator = Deduplicator::new();
-    {
-        let controller = controller.lock().await;
-        let environment = controller.config().environment.clone();
-        match controller.store().load_notifications(&environment).await {
-            Ok(records) => {
-                let count = records.len();
-                deduplicator.seed(records);
-                tracing::debug!(records = count, "resumed notification history");
-            }
-            // Losing the history means saying something twice, which is far
-            // better than the alternative, so this must not stop the loop.
-            Err(error) => tracing::warn!(%error, "cannot resume notification history"),
-        }
-    }
+async fn diagnosis_loop(controller: Arc<Mutex<Controller>>, interval: std::time::Duration) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -275,7 +261,7 @@ async fn diagnosis_loop(
         ticker.tick().await;
 
         let mut controller = controller.lock().await;
-        let update = match controller.diagnose_and_correlate().await {
+        match controller.diagnose_and_correlate().await {
             Ok((diagnoses, update)) => {
                 if !update.is_empty() {
                     tracing::debug!(
@@ -285,7 +271,6 @@ async fn diagnosis_loop(
                         "incidents reconciled"
                     );
                 }
-                update
             }
             // A failed pass must never end the loop: the next one may succeed,
             // and a monitor that gives up during an outage is useless.
@@ -293,24 +278,63 @@ async fn diagnosis_loop(
                 tracing::error!(%error, "diagnosis pass failed");
                 continue;
             }
-        };
-
-        if providers.is_empty() {
-            continue;
         }
+        // The durable candidates are consumed by the notification worker.
+    }
+}
 
-        let maintenance = active_maintenance(&controller).await;
-        match controller
-            .notify(&update, &providers, &mut deduplicator, &maintenance)
+async fn notification_loop(
+    controller: Arc<Mutex<Controller>>,
+    interval: std::time::Duration,
+    providers: Vec<Arc<dyn NotificationProvider>>,
+) {
+    let mut deduplicator = Deduplicator::new();
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let (dispatcher, maintenance) = {
+            let controller = controller.lock().await;
+            (
+                super::notify::NotificationDispatcher {
+                    config: controller.config().clone(),
+                    store: controller.store().clone(),
+                },
+                active_maintenance(&controller).await,
+            )
+        };
+        // Seeding merges delivery history, including deliveries from another
+        // notifier, while retaining local records if persistence briefly fails.
+        match dispatcher
+            .store
+            .load_notifications(&dispatcher.config.environment)
+            .await
+        {
+            Ok(records) => deduplicator.seed(records),
+            Err(error) => tracing::warn!(%error, "cannot resume notification history"),
+        }
+        match dispatcher
+            .notify(
+                &crate::incident::IncidentUpdate::default(),
+                &providers,
+                &mut deduplicator,
+                &maintenance,
+            )
             .await
         {
             Ok(outcome) if outcome.sent > 0 => {
-                tracing::info!(sent = outcome.sent, failed = outcome.failed, "notifications delivered");
+                tracing::info!(sent = outcome.sent, failed = outcome.failed, "notifications delivered")
             }
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "notification pass failed"),
         }
-        deduplicator.prune();
+        if let Ok(candidates) = dispatcher
+            .store
+            .notification_candidates(&dispatcher.config.environment)
+            .await
+        {
+            deduplicator.retain_candidates(&candidates);
+        }
     }
 }
 
@@ -401,6 +425,96 @@ mod tests {
             1,
             "the loop did not see a declared window"
         );
+    }
+
+    struct SlowProvider {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        first: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl NotificationProvider for SlowProvider {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        async fn send(&self, _: &crate::notification::Notification) -> Result<(), crate::notification::ProviderError> {
+            if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_notification_provider_does_not_block_ingestion_or_diagnosis() {
+        use crate::entity::{EntityKey, EntityType};
+        use crate::observation::{Observation, ProbeStatus};
+        use crate::probes::ProbeId;
+        let config = crate::config::Config::from_toml("config_version = 1\nenvironment = \"lab\"\n[controller]\nobserve = false\n[[entities]]\ntype = \"host\"\nname = \"target\"\n[[entities]]\ntype = \"host\"\nname = \"a\"\n[[entities]]\ntype = \"host\"\nname = \"b\"\n", std::path::Path::new("test.toml")).unwrap();
+        let store = crate::persistence::SqliteStore::open_in_memory().await.unwrap();
+        let mut controller = Controller::new(config, store.clone()).await.unwrap();
+        controller.config_mut().notification.min_interval = std::time::Duration::ZERO;
+        controller.discover_once().await.unwrap();
+        let target = EntityKey::new("lab", EntityType::Host, "target").entity_id();
+        let observations = |status| {
+            (0..3)
+                .flat_map(|_| {
+                    ["a", "b"].map(|name| {
+                        Observation::new(ProbeId::new(crate::probes::network::PROBE_ID), target, status)
+                            .with_observer(EntityKey::new("lab", EntityType::Host, name).entity_id())
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        controller
+            .ingest_observations(&observations(ProbeStatus::Timeout))
+            .await
+            .unwrap();
+        controller.diagnose_and_correlate().await.unwrap();
+        let shared = Arc::new(Mutex::new(controller));
+        let slow = Arc::new(SlowProvider {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            first: std::sync::atomic::AtomicBool::new(true),
+        });
+        let notifier = tokio::spawn(notification_loop(
+            Arc::clone(&shared),
+            std::time::Duration::from_millis(10),
+            vec![slow.clone()],
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), slow.entered.notified())
+            .await
+            .expect("provider started");
+        let diagnosis = tokio::spawn(diagnosis_loop(
+            Arc::clone(&shared),
+            std::time::Duration::from_millis(10),
+        ));
+        {
+            let mut controller = tokio::time::timeout(std::time::Duration::from_secs(5), shared.lock())
+                .await
+                .expect("provider must not hold the controller lock");
+            controller
+                .ingest_observations(&observations(ProbeStatus::Ok))
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if store.load_active_incidents("lab").await.unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("diagnosis must resolve even while delivery is blocked");
+        slow.release.notify_one();
+        notifier.abort();
+        diagnosis.abort();
+        let _ = notifier.await;
+        let _ = diagnosis.await;
     }
 
     async fn start(discovery_interval: Option<std::time::Duration>) -> ServerHandle {

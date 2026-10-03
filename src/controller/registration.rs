@@ -131,18 +131,7 @@ impl Controller {
             .cloned()
             .partition(|o| known.contains(&o.target_entity));
 
-        let outcome = self.store().ingest_observations(&accepted).await?;
-        // Through the shared path, so an agent's export probe reaches the
-        // storage domains that host provides. `nfs.server.exports` is local
-        // only: this batch is the sole route it ever takes, and going straight
-        // to the engine here left every storage domain judged on nothing.
-        let transitions = self.ingest_into_engine(&accepted);
-        for transition in &transitions {
-            self.store().save_state_transition(transition).await?;
-        }
-        for state in self.engine().states() {
-            self.store().save_entity_state(state).await?;
-        }
+        let (outcome, _) = self.ingest_observations_recorded(&accepted).await?;
 
         Ok(ObservationBatchResponse {
             protocol_version: PROTOCOL_VERSION,

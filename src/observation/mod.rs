@@ -18,6 +18,10 @@ use crate::entity::EntityId;
 use crate::probes::ProbeId;
 use crate::time::{now, Timestamp};
 
+/// Small clock disagreement tolerated when judging live observations. Larger
+/// future timestamps are preserved as history but cannot vote on health.
+pub const MAX_FUTURE_SKEW_SECONDS: i64 = 5;
+
 /// Globally unique observation identifier, used to make ingestion idempotent
 /// when an agent replays its spool (IMPLEMENTATION.md §45).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

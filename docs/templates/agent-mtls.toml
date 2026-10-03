@@ -1,10 +1,10 @@
-# Cluster Sentinel — agent（mutual TLS）
+# Cluster Sentinel、agent（mutual TLS）
 #
-# 配置先: /etc/sentinel/config.toml（監視対象の各 host）
+# 配置先: /etc/sentinel/config.toml（監視対象の各ホスト）
 # 検証:   sudo -u sentinel sentinel config check
 #
-# client 証明書は **host ごとに** 発行してください。
-# 1 枚を全 host で共有すると、1 台の侵害が全体の侵害になります。
+# クライアント証明書はホストごとに発行してください。
+# 1枚を全ホストで共有すると、1台の侵害が全体の侵害になります。
 
 config_version = 1
 environment = "CHANGE-ME-environment"
@@ -14,17 +14,17 @@ controller_address = "CHANGE-ME-controller-host:7443"
 spool_path = "/var/lib/sentinel/spool.db"
 listen = "0.0.0.0:7444"
 roles = ["compute"]
-# VLAN や bridge が複数ある環境では、クラスタ内通信の NIC を指定してください。
+# VLANやbridgeが複数ある環境では、クラスタ内通信のNICを指定してください。
 # interface = "vlan20"
 
 # ===========================================================================
 # TLS
 #
-# ここに設定があるため、controller_address の "host:port" は
+# ここに設定があるため、controller_addressの "ホスト:ポート" は
 # https:// として解釈されます。
 #
-# controller を IP で指定し、証明書が名前しか持たない場合は
-# server_name に証明書上の名前を書いてください。
+# controllerをIPで指定し、証明書が名前しか持たない場合は
+# server_nameに証明書上の名前を書いてください。
 # ===========================================================================
 [tls]
 ca          = "/etc/sentinel/tls/ca.crt"

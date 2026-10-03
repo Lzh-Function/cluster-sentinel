@@ -20,6 +20,35 @@ use super::{SqliteStore, StoreError};
 const STATUS_SENT: &str = "sent";
 
 impl SqliteStore {
+    pub async fn notification_candidates(
+        &self,
+        environment: &str,
+    ) -> Result<Vec<crate::notification::Notification>, StoreError> {
+        let payloads: Vec<String> = sqlx::query_scalar("SELECT c.payload FROM notification_candidates c JOIN incidents i ON i.id = c.incident_id WHERE i.environment = ?")
+            .bind(environment).fetch_all(self.pool()).await?;
+        payloads
+            .into_iter()
+            .map(|p| {
+                serde_json::from_str(&p).map_err(|e| StoreError::Decode {
+                    kind: "notification",
+                    detail: e.to_string(),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn is_notification_current(
+        &self,
+        notification: &crate::notification::Notification,
+    ) -> Result<bool, StoreError> {
+        let exists: i64 =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notification_candidates WHERE deduplication_key = ?)")
+                .bind(notification.deduplication_key())
+                .fetch_one(self.pool())
+                .await?;
+        Ok(exists != 0)
+    }
+
     /// Record that a notification was delivered.
     pub async fn save_notification(&self, record: &NotificationRecord) -> Result<(), StoreError> {
         sqlx::query(

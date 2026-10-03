@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use super::Notification;
+use super::{Notification, Trigger};
 use crate::config::WebhookFormat;
 use crate::incident::Severity;
 
@@ -18,7 +18,7 @@ use crate::incident::Severity;
 #[derive(Debug, Error)]
 pub enum ProviderError {
     /// The destination could not be reached.
-    #[error("cannot reach {destination}: {detail}")]
+    #[error("通知先{destination}に接続できません。詳細　{detail}")]
     Unreachable {
         /// Where it was trying to send.
         destination: String,
@@ -26,7 +26,7 @@ pub enum ProviderError {
         detail: String,
     },
     /// The destination refused the message.
-    #[error("{destination} returned {status}: {detail}")]
+    #[error("通知先{destination}がHTTP {status}を返しました。詳細　{detail}")]
     Rejected {
         /// Where it was trying to send.
         destination: String,
@@ -36,7 +36,7 @@ pub enum ProviderError {
         detail: String,
     },
     /// The provider could not be built.
-    #[error("provider misconfigured: {0}")]
+    #[error("通知先の設定に誤りがあります。詳細　{0}")]
     Misconfigured(String),
 }
 
@@ -85,12 +85,46 @@ fn truncated(text: &str, limit: usize) -> String {
     out
 }
 
+fn slack_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn plain_section(text: &str) -> serde_json::Value {
+    serde_json::json!({"type": "section", "text": {"type": "plain_text", "text": text, "emoji": false}})
+}
+
+/// Pack whole paragraphs/steps, never splitting a command into an invalid fragment.
+fn grouped_sections(parts: impl IntoIterator<Item = String>, omitted: &str) -> Vec<String> {
+    let mut groups = Vec::new();
+    let mut group = String::new();
+    for part in parts {
+        let part = if part.chars().count() > SLACK_SECTION_LIMIT {
+            omitted.to_string()
+        } else {
+            part
+        };
+        if !group.is_empty() && group.chars().count() + 2 + part.chars().count() > SLACK_SECTION_LIMIT {
+            groups.push(std::mem::take(&mut group));
+        }
+        if !group.is_empty() {
+            group.push_str("\n\n");
+        }
+        group.push_str(&part);
+    }
+    if !group.is_empty() {
+        groups.push(group);
+    }
+    groups
+}
+
 impl WebhookProvider {
     /// Build a webhook provider.
     pub fn new(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self, ProviderError> {
         let url = url.into();
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(ProviderError::Misconfigured(format!("{url} is not an http(s) URL")));
+            return Err(ProviderError::Misconfigured(format!(
+                "{url}はhttp(s)のURLではありません"
+            )));
         }
 
         let http = reqwest::Client::builder()
@@ -132,109 +166,112 @@ impl WebhookProvider {
             if !text.ends_with("\n\n") {
                 text.push_str(if text.ends_with('\n') { "\n" } else { "\n\n" });
             }
-            text.push_str("Recommended actions:\n");
-            for action in &notification.recommended_actions {
-                text.push_str(&format!("  - {action}\n"));
+            text.push_str("確認手順\n");
+            for (index, action) in notification.recommended_actions.iter().enumerate() {
+                text.push_str(&format!("{}. {action}\n", index + 1));
             }
         }
         text
     }
 
-    /// Colour and icon for a notification, by what it is telling you.
-    ///
-    /// Colour is the thing a person reads before any words, so it carries the
-    /// one distinction that matters at a glance: is this starting or ending.
-    /// A recovery is green whatever its severity.
-    fn appearance(notification: &Notification) -> (&'static str, &'static str) {
-        if notification.trigger.is_recovery() {
-            return ("#2e7d32", "\u{2705}");
-        }
-        match notification.severity {
-            Severity::Critical => ("#d32f2f", "\u{1f534}"),
-            Severity::Warning => ("#f9a825", "\u{1f7e1}"),
-            Severity::Info => ("#546e7a", "\u{1f535}"),
+    fn color(notification: &Notification) -> &'static str {
+        match notification.trigger {
+            Trigger::Resolved => "#2e7d32",
+            Trigger::Recovering => "#f9a825",
+            _ => match notification.severity {
+                Severity::Critical => "#d32f2f",
+                Severity::Warning => "#f9a825",
+                Severity::Info => "#546e7a",
+            },
         }
     }
 
-    /// The summary without the severity word the heading already carries.
-    ///
-    /// Titles are built as `SEVERITY: summary`. Repeating the severity beside
-    /// a coloured bar that already says it wastes the first line, which on a
-    /// phone is most of what gets read.
+    fn mentions_channel(notification: &Notification) -> bool {
+        notification.severity == Severity::Critical && !notification.trigger.is_recovery()
+    }
+
     fn summary(notification: &Notification) -> &str {
         notification
             .title
-            .split_once(": ")
+            .split_once(" / ")
+            .or_else(|| notification.title.split_once(": "))
             .map(|(_, rest)| rest)
             .unwrap_or(&notification.title)
     }
 
-    /// Slack Block Kit: a coloured attachment with the detail laid out.
+    /// Slack Block Kit, with complete steps and a CLI fallback for oversized messages.
     fn slack_payload(notification: &Notification) -> serde_json::Value {
-        let (color, icon) = Self::appearance(notification);
-        let heading = if notification.trigger.is_recovery() {
-            format!("{icon} RESOLVED")
-        } else {
-            format!("{icon} {}", notification.severity.to_string().to_uppercase())
-        };
-
-        let mut blocks = vec![
-            serde_json::json!({
-                "type": "header",
-                "text": { "type": "plain_text", "text": truncated(&heading, SLACK_HEADER_LIMIT), "emoji": true }
-            }),
-            serde_json::json!({
-                "type": "section",
-                "text": { "type": "mrkdwn", "text": truncated(&format!("*{}*", Self::summary(notification)), SLACK_SECTION_LIMIT) }
-            }),
-        ];
-
-        // The detail as a preformatted block: it is machine-written, aligned,
-        // and mangled by Slack's paragraph wrapping otherwise. A fence inside
-        // the text would close the block early and spill the rest as markup,
-        // so any is neutralised first.
-        if !notification.body.trim().is_empty() {
-            let body = notification.body.trim().replace("```", "'\u{2019}'");
+        use crate::diagnosis::investigation as guide;
+        let details = guide::sentinel(&format!("incident show {}", guide::quote(&notification.incident_id)));
+        let omitted = format!(
+            "表示上限のため、一部を省略しました。Sentinel controllerで、確認手順の全文を表示してください。\n{details}"
+        );
+        let mut blocks = Vec::new();
+        if Self::mentions_channel(notification) {
+            // An explicit special mention works with incoming webhooks, too.
+            // Only this trusted block interprets Slack markup.
             blocks.push(serde_json::json!({
                 "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": truncated(&format!("```{body}```"), SLACK_SECTION_LIMIT)
-                }
+                "text": {"type": "mrkdwn", "text": "<!channel>", "verbatim": true}
             }));
         }
-
+        blocks.push(serde_json::json!({
+            "type": "header",
+            "text": {"type": "plain_text", "text": truncated(notification.title.split_once(" / ").map(|(heading, _)| heading).unwrap_or(&super::heading_for(notification.trigger, notification.severity)), SLACK_HEADER_LIMIT), "emoji": false}
+        }));
+        if notification.body.trim().is_empty() {
+            blocks.push(plain_section(&truncated(
+                Self::summary(notification),
+                SLACK_SECTION_LIMIT,
+            )));
+        }
+        let body = grouped_sections(
+            notification
+                .body
+                .split("\n\n")
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string),
+            &omitted,
+        );
+        let mut was_omitted = body.len() > 10;
+        blocks.extend(body.into_iter().take(10).map(|text| plain_section(&text)));
         if !notification.recommended_actions.is_empty() {
-            let actions = notification
-                .recommended_actions
-                .iter()
-                .map(|a| format!("• `{a}`"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            blocks.push(serde_json::json!({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": truncated(&format!("*Suggested investigation (read-only)*\n{actions}"), SLACK_SECTION_LIMIT)
-                }
-            }));
+            blocks.push(plain_section("確認手順"));
+            let actions = grouped_sections(
+                notification
+                    .recommended_actions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, action)| format!("{}. {action}", index + 1)),
+                &omitted,
+            );
+            // Reserve two blocks for the overflow notice and context.
+            let available = 50usize.saturating_sub(blocks.len() + 2);
+            was_omitted |= actions.len() > available;
+            blocks.extend(actions.into_iter().take(available).map(|text| plain_section(&text)));
         }
-
+        if was_omitted {
+            blocks.push(plain_section(&omitted));
+        }
         blocks.push(serde_json::json!({
             "type": "context",
-            "elements": [{
-                "type": "mrkdwn",
-                "text": format!("cluster-sentinel • `{}` • {}", notification.fingerprint, notification.created_at)
-            }]
+            "elements": [{"type": "plain_text", "text": truncated(&format!("Cluster Sentinel / 障害ID {} / {}", notification.incident_id, notification.created_at), SLACK_SECTION_LIMIT), "emoji": false}]
         }));
-
+        // Escape external text so names, reasons and commands cannot add mentions.
+        let fallback = slack_escape(&Self::message(notification));
+        let preview = if Self::mentions_channel(notification) {
+            format!("<!channel>\n{fallback}")
+        } else {
+            fallback
+        };
+        let preview = truncated(&preview, SLACK_SECTION_LIMIT);
         serde_json::json!({
-            // Also at the top level: Slack uses it for the notification
-            // preview and for clients that do not render blocks.
-            "text": truncated(&notification.title, SLACK_SECTION_LIMIT),
+            "text": preview,
+            "unfurl_links": false,
+            "unfurl_media": false,
             "attachments": [{
-                "color": color,
-                "fallback": truncated(&notification.title, SLACK_SECTION_LIMIT),
+                "color": Self::color(notification),
+                "fallback": preview,
                 "blocks": blocks
             }]
         })
@@ -266,7 +303,7 @@ impl WebhookProvider {
             "fingerprint": notification.fingerprint,
             "trigger": notification.trigger,
             "severity": notification.severity,
-            "resolved": notification.trigger.is_recovery(),
+            "resolved": notification.trigger == Trigger::Resolved,
             "title": notification.title,
             "body": notification.body,
             "recommended_actions": notification.recommended_actions,
@@ -341,17 +378,104 @@ mod tests {
     }
 
     #[test]
-    fn a_recovery_is_green_whatever_its_severity() {
-        // The distinction a colour has to carry is starting versus ending.
-        // A critical incident that has just resolved is good news.
-        let mut resolved = notification(Trigger::Resolved);
-        resolved.severity = Severity::Critical;
-        let (color, icon) = WebhookProvider::appearance(&resolved);
-        assert_eq!(color, "#2e7d32");
-        assert_eq!(icon, "\u{2705}");
+    fn completed_and_incomplete_recovery_have_distinct_colors() {
+        assert_eq!(WebhookProvider::color(&notification(Trigger::Resolved)), "#2e7d32");
+        assert_eq!(WebhookProvider::color(&notification(Trigger::Recovering)), "#f9a825");
+        assert_eq!(WebhookProvider::color(&notification(Trigger::Opened)), "#d32f2f");
+    }
 
-        let (color, _) = WebhookProvider::appearance(&notification(Trigger::Opened));
-        assert_ne!(color, "#2e7d32");
+    #[test]
+    fn only_red_critical_notifications_begin_with_a_channel_mention() {
+        for severity in [Severity::Info, Severity::Warning, Severity::Critical] {
+            for trigger in [
+                Trigger::Opened,
+                Trigger::Escalated,
+                Trigger::DiagnosisChanged,
+                Trigger::Recovering,
+                Trigger::Resolved,
+            ] {
+                let mut notification = notification(trigger);
+                notification.severity = severity;
+                let payload = WebhookProvider::slack_payload(&notification);
+                let red = payload["attachments"][0]["color"] == "#d32f2f";
+                assert_eq!(payload["text"].as_str().unwrap().starts_with("<!channel>\n"), red);
+                assert_eq!(
+                    payload["attachments"][0]["fallback"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("<!channel>\n"),
+                    red
+                );
+                let first = &payload["attachments"][0]["blocks"][0];
+                assert_eq!(first["text"]["text"] == "<!channel>", red);
+                if red {
+                    assert_eq!(first["text"]["type"], "mrkdwn");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_is_not_reported_as_complete_until_resolved() {
+        let recovering = notification(Trigger::Recovering);
+        assert_eq!(WebhookProvider::payload(&recovering)["resolved"], false);
+        let payload = WebhookProvider::slack_payload(&recovering);
+        assert_eq!(payload["attachments"][0]["blocks"][0]["text"]["text"], "復旧途中");
+        assert!(payload["text"].as_str().unwrap().contains("まだ確認できていません"));
+    }
+
+    #[test]
+    fn long_japanese_instructions_keep_every_command_in_order() {
+        let mut notification = notification(Trigger::Opened);
+        notification.recommended_actions = (0..40)
+            .map(|i| {
+                format!(
+                    "{}\nsudo -u sentinel sentinel entity show 'host/node{i}' --json",
+                    "接続先と観測時刻を確認してください。".repeat(12)
+                )
+            })
+            .collect();
+        let payload = WebhookProvider::slack_payload(&notification);
+        let rendered = payload["attachments"][0]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["text"]["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut offset = 0;
+        for action in &notification.recommended_actions {
+            let next = rendered[offset..].find(action).expect("complete instruction");
+            offset += next + action.len();
+        }
+        assert!(!rendered.contains("一部を省略"));
+    }
+
+    #[test]
+    fn overflow_preserves_the_cli_fallback_and_never_splits_a_command() {
+        let mut notification = notification(Trigger::Opened);
+        let command = format!("sudo -u sentinel sentinel entity show {}", "巨大な名前".repeat(1000));
+        notification.recommended_actions = (0..100)
+            .map(|_| "確認してください。".repeat(300))
+            .chain([command.clone()])
+            .collect();
+        let payload = WebhookProvider::slack_payload(&notification);
+        let blocks = payload["attachments"][0]["blocks"].as_array().unwrap();
+        assert!(blocks.len() <= 50);
+        let texts: Vec<_> = blocks.iter().filter_map(|b| b["text"]["text"].as_str()).collect();
+        assert!(texts
+            .iter()
+            .any(|t| t.contains("sudo -u sentinel sentinel incident show")));
+        assert!(texts.iter().all(|t| !t.contains("巨大な名前")));
+        assert!(texts.iter().all(|t| t.chars().count() <= SLACK_SECTION_LIMIT));
+    }
+
+    #[test]
+    fn a_test_notification_keeps_its_test_heading() {
+        let mut notification = notification(Trigger::Opened);
+        notification.title = "通知テスト / Cluster Sentinel".into();
+        let payload = WebhookProvider::slack_payload(&notification);
+        assert_eq!(payload["attachments"][0]["blocks"][1]["text"]["text"], "通知テスト");
     }
 
     #[test]
@@ -372,17 +496,19 @@ mod tests {
     }
 
     #[test]
-    fn a_code_fence_in_the_body_cannot_escape_the_block() {
-        // A fence inside the text would close the preformatted block early and
-        // spill the rest as markup.
+    fn external_text_is_literal_and_cannot_add_a_mention() {
         let mut n = notification(Trigger::Opened);
-        n.body = "before ``` after".into();
-
+        n.body = "before ``` <!channel> after".into();
+        n.severity = Severity::Warning;
         let payload = WebhookProvider::slack_payload(&n);
-        let text = payload["attachments"][0]["blocks"][2]["text"]["text"]
-            .as_str()
-            .expect("body block");
-        assert_eq!(text.matches("```").count(), 2, "{text}");
+        let blocks = payload["attachments"][0]["blocks"].as_array().unwrap();
+        let body = blocks
+            .iter()
+            .find(|b| b["text"]["text"] == n.body)
+            .expect("literal body");
+        assert_eq!(body["text"]["type"], "plain_text");
+        assert!(!payload["text"].as_str().unwrap().contains("<!channel>"));
+        assert!(payload["text"].as_str().unwrap().contains("&lt;!channel&gt;"));
     }
 
     #[test]
@@ -442,9 +568,10 @@ mod tests {
 
     #[test]
     fn the_message_includes_what_to_do_about_it() {
-        let payload = WebhookProvider::payload(&notification(Trigger::Opened));
+        let notification = notification(Trigger::Opened);
+        let payload = WebhookProvider::payload(&notification);
         let text = payload["text"].as_str().expect("text");
-        for action in &notification(Trigger::Opened).recommended_actions {
+        for action in &notification.recommended_actions {
             assert!(text.contains(action), "{text}");
         }
     }
@@ -489,8 +616,12 @@ mod tests {
         assert_eq!(payload["severity"], "critical");
         assert_eq!(payload["trigger"], "opened");
         assert_eq!(payload["resolved"], false);
-        assert!(payload["title"].as_str().unwrap().contains("CRITICAL"));
-        assert_eq!(payload["recommended_actions"][0], "systemctl status nfs-server");
+        assert!(payload["title"].as_str().unwrap().contains("重大"));
+        assert!(payload["recommended_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "systemctl status nfs-server"));
     }
 
     #[test]
@@ -529,11 +660,21 @@ mod tests {
             Duration::from_secs(2),
         )
         .expect("provider");
-        provider.send(&notification(Trigger::Opened)).await.expect("send");
+        provider
+            .send(&notification(Trigger::Opened))
+            .await
+            .expect("generic send");
+        provider
+            .with_format(WebhookFormat::Slack)
+            .send(&notification(Trigger::Opened))
+            .await
+            .expect("Slack send");
 
         let received = received.lock().await;
-        assert_eq!(received.len(), 1);
+        assert_eq!(received.len(), 2);
         assert_eq!(received[0]["fingerprint"], "cause:fs1");
+        assert!(received[1]["text"].as_str().unwrap().starts_with("<!channel>\n"));
+        assert_eq!(received[1]["attachments"][0]["color"], "#d32f2f");
     }
 
     #[tokio::test]

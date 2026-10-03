@@ -7,6 +7,7 @@
 
 mod context;
 mod engine;
+pub(crate) mod investigation;
 pub mod rules;
 
 pub use context::{DiagnosisContext, ObservationIndex};
@@ -20,6 +21,23 @@ use uuid::Uuid;
 use crate::entity::EntityId;
 use crate::observation::ObservationId;
 use crate::time::{now, Timestamp};
+
+/// Built-in refinements of entity health shown alongside the diagnosis.
+pub fn classification_for(diagnosis: &Diagnosis) -> Option<&'static str> {
+    use crate::state::classification;
+    match diagnosis.diagnosis_type.as_str() {
+        kind::HOST_UNREACHABLE => Some(classification::HOST_UNREACHABLE),
+        kind::PATH_SPECIFIC_NETWORK_FAILURE => Some(classification::NETWORK_PATH_DEGRADED),
+        kind::SSH_SERVICE_FAILURE => Some(classification::SSH_DEGRADED),
+        kind::SENTINEL_AGENT_FAILURE => Some(classification::AGENT_DEGRADED),
+        kind::SLURM_ONLY_DEGRADATION => Some(classification::SCHEDULER_DEGRADED),
+        kind::SLURMD_SERVICE_FAILURE | kind::SLURM_CONTROL_PLANE_FAILURE => Some(classification::SERVICE_FAILURE),
+        kind::NFS_SERVICE_FAILURE | kind::NFS_CLIENT_FAILURE | kind::SHARED_STORAGE_FAILURE => {
+            Some(classification::STORAGE_DEGRADED)
+        }
+        _ => None,
+    }
+}
 
 /// The conclusion a rule reached. A string, so an integration can add its own
 /// without editing a core enum; the built-in ones are in [`kind`].
@@ -36,6 +54,27 @@ impl DiagnosisType {
     /// The diagnosis type as a string.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Japanese label for built-in diagnoses; custom integrations retain their name.
+    pub fn label(&self) -> &str {
+        match self.as_str() {
+            kind::HOST_UNREACHABLE => "ホストへの接続失敗",
+            kind::PATH_SPECIFIC_NETWORK_FAILURE => "監視元による接続結果の違い",
+            kind::SSH_SERVICE_FAILURE => "SSH接続の異常",
+            kind::SENTINEL_AGENT_FAILURE => "Sentinel agentの応答異常",
+            kind::SLURMD_SERVICE_FAILURE => "Slurmノードの応答・登録異常",
+            kind::SLURM_ONLY_DEGRADATION => "Slurmのジョブ割り当て停止",
+            kind::SLURM_CONTROL_PLANE_FAILURE => "Slurm controllerの応答異常",
+            kind::RESOURCE_CONFIGURATION_MISMATCH => "リソース数の不一致",
+            kind::GPU_CONFIGURATION_MISMATCH => "GPU数の不一致",
+            kind::NFS_SERVICE_FAILURE => "NFSサーバーの異常",
+            kind::NFS_CLIENT_FAILURE => "ホストからのNFSアクセス異常",
+            kind::SHARED_STORAGE_FAILURE => "複数ホストの共有ストレージアクセス異常",
+            kind::CLOCK_SKEW => "ホスト間の時刻ずれ",
+            kind::HOST_REBOOTED => "ホストの再起動",
+            _ => self.as_str(),
+        }
     }
 }
 

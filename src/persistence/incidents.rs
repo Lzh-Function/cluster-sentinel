@@ -22,8 +22,26 @@ const ROLE_ROOT: &str = "suspected_root";
 impl SqliteStore {
     /// Write an incident and everything hanging off it.
     pub async fn save_incident(&self, environment: &str, incident: &Incident) -> Result<(), StoreError> {
-        let id = incident.id.to_string();
+        self.save_incidents(environment, &[incident]).await
+    }
+
+    /// Commit a reconciliation and its notification candidates together.
+    pub async fn save_incidents(&self, environment: &str, incidents: &[&Incident]) -> Result<(), StoreError> {
         let mut tx = self.pool().begin().await?;
+        for incident in incidents {
+            self.save_incident_in(environment, incident, &mut tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn save_incident_in(
+        &self,
+        environment: &str,
+        incident: &Incident,
+        tx: &mut sqlx::SqliteConnection,
+    ) -> Result<(), StoreError> {
+        let id = incident.id.to_string();
 
         sqlx::query(
             "INSERT INTO incidents (id, environment, fingerprint, status, severity, started_at, ended_at, updated_at)
@@ -151,7 +169,29 @@ impl SqliteStore {
             .await?;
         }
 
-        tx.commit().await?;
+        // A returning fault supersedes undelivered recovery messages from an
+        // earlier incident with the same cause. Otherwise RESOLVED could arrive
+        // after the new CRITICAL despite the machine still being down.
+        sqlx::query("DELETE FROM notification_candidates WHERE incident_id IN (SELECT id FROM incidents WHERE environment = ? AND fingerprint = ? AND id != ? AND started_at <= ?)")
+            .bind(environment).bind(&incident.fingerprint).bind(&id).bind(to_rfc3339(incident.started_at)).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM notification_candidates WHERE incident_id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        for n in crate::notification::notifications_for_incident(incident) {
+            let payload = serde_json::to_string(&n).map_err(|e| StoreError::Decode {
+                kind: "notification",
+                detail: e.to_string(),
+            })?;
+            sqlx::query(
+                "INSERT INTO notification_candidates (deduplication_key, incident_id, payload) VALUES (?, ?, ?)",
+            )
+            .bind(n.deduplication_key())
+            .bind(&id)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await?;
+        }
         Ok(())
     }
 
@@ -175,12 +215,24 @@ impl SqliteStore {
 
     /// Load the incidents that still need attention.
     pub async fn load_active_incidents(&self, environment: &str) -> Result<Vec<Incident>, StoreError> {
-        Ok(self
-            .load_incidents(environment, 1000)
-            .await?
-            .into_iter()
-            .filter(|i| i.status.is_active())
-            .collect())
+        let rows = sqlx::query("SELECT id, fingerprint, status, severity, started_at, ended_at FROM incidents WHERE environment = ? AND status IN ('open', 'recovering', 'acknowledged') ORDER BY started_at DESC")
+            .bind(environment).fetch_all(self.pool()).await?;
+        let mut incidents = Vec::new();
+        for row in rows {
+            incidents.push(self.hydrate_incident(&row).await?);
+        }
+        Ok(incidents)
+    }
+
+    pub async fn load_resumable_incidents(&self, environment: &str) -> Result<Vec<Incident>, StoreError> {
+        let cutoff = now() - chrono::Duration::minutes(crate::incident::REOPEN_WINDOW_MINUTES);
+        let rows = sqlx::query("SELECT id, fingerprint, status, severity, started_at, ended_at FROM incidents WHERE environment = ? AND (status IN ('open', 'recovering', 'acknowledged') OR (status = 'resolved' AND ended_at >= ?)) ORDER BY started_at DESC")
+            .bind(environment).bind(to_rfc3339(cutoff)).fetch_all(self.pool()).await?;
+        let mut incidents = Vec::new();
+        for row in rows {
+            incidents.push(self.hydrate_incident(&row).await?);
+        }
+        Ok(incidents)
     }
 
     /// Load one incident by id.

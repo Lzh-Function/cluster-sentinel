@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, HashMap};
 use crate::entity::EntityId;
 use crate::observation::{Observation, ProbeStatus};
 use crate::probes::ProbeId;
+use crate::time::Timestamp;
+use serde::{Deserialize, Serialize};
 
 use super::{ComponentState, DebouncePolicy, Debouncer, EntityState, Health, StateComponent, StateTransition};
 
@@ -20,6 +22,8 @@ pub struct ProbeMapping {
     pub component: StateComponent,
     /// How much evidence is needed before health changes.
     pub policy: DebouncePolicy,
+    /// Event probes preserve history without asserting component health.
+    pub informational: bool,
 }
 
 impl ProbeMapping {
@@ -28,6 +32,7 @@ impl ProbeMapping {
         Self {
             component,
             policy: DebouncePolicy::default(),
+            informational: false,
         }
     }
 
@@ -40,7 +45,13 @@ impl ProbeMapping {
         Self {
             component,
             policy: DebouncePolicy::immediate(),
+            informational: false,
         }
+    }
+
+    pub fn informational(mut self) -> Self {
+        self.informational = true;
+        self
     }
 
     /// Builder: use a specific policy.
@@ -50,11 +61,26 @@ impl ProbeMapping {
     }
 }
 
+/// One independently debounced probe and observer. Persisted across restarts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateStream {
+    pub entity: EntityId,
+    pub probe: ProbeId,
+    pub observer: Option<EntityId>,
+    pub component: StateComponent,
+    pub last_observation: crate::observation::ObservationId,
+    pub finished_at: Timestamp,
+    pub debouncer: Debouncer,
+    pub state: ComponentState,
+    #[serde(default)]
+    pub expired: bool,
+}
+
 /// Derives [`EntityState`] from a stream of observations.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct StateEngine {
     mappings: BTreeMap<ProbeId, ProbeMapping>,
-    debouncers: HashMap<(EntityId, StateComponent), Debouncer>,
+    streams: HashMap<(EntityId, ProbeId, Option<EntityId>), StateStream>,
     states: BTreeMap<EntityId, EntityState>,
 }
 
@@ -81,53 +107,169 @@ impl StateEngine {
     /// caller but changes no state: an integration that has not said what its
     /// probe means must not be guessed at.
     pub fn ingest(&mut self, observation: &Observation) -> Option<StateTransition> {
+        if observation.finished_at
+            > crate::time::now() + chrono::Duration::seconds(crate::observation::MAX_FUTURE_SKEW_SECONDS)
+        {
+            return None;
+        }
         let mapping = self.mappings.get(&observation.probe_id)?.clone();
+        if mapping.informational {
+            return None;
+        }
         let entity = observation.target_entity;
         let component = mapping.component;
 
+        let key = (entity, observation.probe_id.clone(), observation.observer_entity);
+        if let Some(stream) = self.streams.get(&key) {
+            // A replay must not count toward hysteresis, and delayed spool
+            // uploads must not overwrite a more recent verdict.
+            if stream.last_observation == observation.id || stream.finished_at > observation.finished_at {
+                return None;
+            }
+        }
+        let previous = self
+            .states
+            .entry(entity)
+            .or_insert_with(|| EntityState::unknown(entity))
+            .component(component);
+        let starting = if self
+            .streams
+            .values()
+            .any(|s| s.entity == entity && s.component == component)
+        {
+            Health::Unknown
+        } else {
+            previous
+        };
+        let stream = self.streams.entry(key).or_insert_with(|| StateStream {
+            entity,
+            probe: observation.probe_id.clone(),
+            observer: observation.observer_entity,
+            component,
+            last_observation: observation.id,
+            finished_at: observation.finished_at,
+            debouncer: Debouncer::starting_at(mapping.policy, starting),
+            state: ComponentState::new(starting),
+            expired: false,
+        });
+        stream.expired = false;
+        stream.last_observation = observation.id;
+        stream.finished_at = observation.finished_at;
+        let health = match observation.status {
+            ProbeStatus::Unsupported => {
+                stream.debouncer.force(Health::Unknown);
+                Health::Unknown
+            }
+            ProbeStatus::NotApplicable => {
+                stream.debouncer.force(Health::NotApplicable);
+                Health::NotApplicable
+            }
+            status => {
+                stream.debouncer.observe(is_bad(status));
+                cap(stream.debouncer.health(), status)
+            }
+        };
+        if stream.state.health != health {
+            stream.state.since = observation.finished_at;
+        }
+        stream.state.health = health;
+        stream.state.evidence = vec![observation.id];
+        stream.state.consecutive_failures = stream.debouncer.consecutive_failures();
+        stream.state.consecutive_successes = stream.debouncer.consecutive_successes();
+        self.recompute(entity, component)
+    }
+
+    fn recompute(&mut self, entity: EntityId, component: StateComponent) -> Option<StateTransition> {
+        let contributors: Vec<_> = self
+            .streams
+            .values()
+            .filter(|s| s.entity == entity && s.component == component)
+            .collect();
+        // A reassigned observer's old answer stops voting when other observers
+        // still measure this same probe. A missing *probe* remains Unknown.
+        let contributors: Vec<_> = contributors
+            .iter()
+            .filter(|s| {
+                !s.expired
+                    || !contributors
+                        .iter()
+                        .any(|other| other.probe == s.probe && !other.expired)
+            })
+            .copied()
+            .collect();
+        let worst = contributors
+            .iter()
+            .max_by_key(|s| (s.state.health.severity_rank(), s.probe.clone(), s.observer))?;
+        let mut combined = worst.state.clone();
+        combined.evidence = contributors
+            .iter()
+            .flat_map(|s| s.state.evidence.iter().copied())
+            .collect();
+        combined.evidence.sort();
+        combined.evidence.dedup();
         let state = self
             .states
             .entry(entity)
             .or_insert_with(|| EntityState::unknown(entity));
         let previous = state.component(component);
+        let health = combined.health;
+        if previous == health {
+            combined.since = state
+                .components
+                .get(&component)
+                .map(|c| c.since)
+                .unwrap_or(combined.since);
+        }
+        let evidence = combined.evidence.clone();
+        state.set_component(component, combined);
+        (health != previous)
+            .then(|| StateTransition::new(entity, Some(component), previous, health).with_evidence(evidence))
+    }
 
-        if !observation.status.is_conclusive() {
-            // "This entity has no GPUs" is a fact about applicability, not a
-            // measurement, so it bypasses the debouncer entirely.
-            if previous == Health::NotApplicable {
-                return None;
+    /// Expire health evidence without interpreting silence as recovery.
+    pub fn expire(
+        &mut self,
+        at: Timestamp,
+        horizon: impl Fn(&StateStream) -> chrono::Duration,
+    ) -> Vec<StateTransition> {
+        let mut changed = std::collections::BTreeSet::new();
+        for stream in self.streams.values_mut() {
+            if at - stream.finished_at > horizon(stream) && stream.state.health != Health::NotApplicable {
+                stream.expired = true;
+                stream.state.health = Health::Unknown;
+                stream.debouncer.force(Health::Unknown);
+                changed.insert((stream.entity, stream.component));
             }
-            state.set_component(component, ComponentState::new(Health::NotApplicable));
-            return Some(StateTransition::new(
-                entity,
-                Some(component),
-                previous,
-                Health::NotApplicable,
-            ));
         }
+        changed.into_iter().filter_map(|(e, c)| self.recompute(e, c)).collect()
+    }
 
-        let debouncer = self
-            .debouncers
-            .entry((entity, component))
-            .or_insert_with(|| Debouncer::starting_at(mapping.policy, previous));
+    /// Whether this source's current verdict has met the recovery threshold.
+    pub fn confirms_health(&self, observation: &Observation) -> bool {
+        self.streams
+            .get(&(
+                observation.target_entity,
+                observation.probe_id.clone(),
+                observation.observer_entity,
+            ))
+            .map(|s| s.state.health == Health::Healthy && !s.expired)
+            .unwrap_or_else(|| !self.knows(&observation.probe_id))
+    }
 
-        debouncer.observe(is_bad(observation.status));
+    pub fn streams(&self) -> impl Iterator<Item = &StateStream> {
+        self.streams.values()
+    }
 
-        // The debouncer knows *how persistent* the problem is; the status knows
-        // *how severe* it can be. A slow filesystem reported three times is
-        // still degraded, not unavailable.
-        let health = cap(debouncer.health(), observation.status);
-
-        if health == previous {
-            return None;
+    pub fn seed_streams(&mut self, streams: impl IntoIterator<Item = StateStream>) {
+        let mut components = std::collections::BTreeSet::new();
+        for stream in streams {
+            components.insert((stream.entity, stream.component));
+            self.streams
+                .insert((stream.entity, stream.probe.clone(), stream.observer), stream);
         }
-
-        let mut component_state = ComponentState::new(health).with_evidence([observation.id]);
-        component_state.consecutive_failures = debouncer.consecutive_failures();
-        component_state.consecutive_successes = debouncer.consecutive_successes();
-        state.set_component(component, component_state);
-
-        Some(StateTransition::new(entity, Some(component), previous, health).with_evidence([observation.id]))
+        for (e, c) in components {
+            self.recompute(e, c);
+        }
     }
 
     /// Fold in many observations, in the order given.
@@ -155,18 +297,6 @@ impl StateEngine {
 
     /// Seed an entity's state, for rehydrating from the database.
     pub fn seed(&mut self, state: EntityState) {
-        for (component, component_state) in &state.components {
-            let policy = self
-                .mappings
-                .values()
-                .find(|m| m.component == *component)
-                .map(|m| m.policy)
-                .unwrap_or_default();
-            self.debouncers.insert(
-                (state.entity, *component),
-                Debouncer::starting_at(policy, component_state.health),
-            );
-        }
         self.states.insert(state.entity, state);
     }
 }
@@ -207,6 +337,69 @@ mod tests {
         let mut engine = StateEngine::new();
         engine.register(probe, mapping);
         engine
+    }
+
+    #[test]
+    fn a_healthy_probe_cannot_hide_a_failed_probe_in_the_same_component() {
+        let mut engine = engine_with("metrics", ProbeMapping::immediate(StateComponent::Host));
+        engine.register("journal", ProbeMapping::immediate(StateComponent::Host));
+        engine.ingest(&observation("metrics", entity("a"), ProbeStatus::Failed));
+        for _ in 0..5 {
+            engine.ingest(&observation("journal", entity("a"), ProbeStatus::Ok));
+        }
+        assert_eq!(engine.state(entity("a")).unwrap().overall, Health::Unavailable);
+        engine.ingest(&observation("metrics", entity("a"), ProbeStatus::Ok));
+        assert_eq!(engine.state(entity("a")).unwrap().overall, Health::Healthy);
+    }
+
+    #[test]
+    fn healthy_observers_cannot_erase_a_failing_observers_path() {
+        let mut engine = engine_with("network", ProbeMapping::new(StateComponent::Network));
+        for _ in 0..3 {
+            engine.ingest(&observation("network", entity("a"), ProbeStatus::Timeout).with_observer(entity("bad")));
+            engine.ingest(&observation("network", entity("a"), ProbeStatus::Ok).with_observer(entity("good")));
+        }
+        assert_eq!(engine.state(entity("a")).unwrap().overall, Health::Unavailable);
+    }
+
+    #[test]
+    fn unsupported_is_unknown_and_does_not_remove_a_known_failed_probe() {
+        let mut engine = engine_with("storage", ProbeMapping::immediate(StateComponent::Storage));
+        engine.ingest(&observation("storage", entity("a"), ProbeStatus::Failed));
+        engine.ingest(&observation("storage", entity("a"), ProbeStatus::Unsupported));
+        assert_eq!(engine.state(entity("a")).unwrap().overall, Health::Unknown);
+    }
+
+    #[test]
+    fn applicability_changes_reset_the_hysteresis_history() {
+        let mut engine = engine_with("gpu", ProbeMapping::new(StateComponent::Accelerator));
+        for _ in 0..3 {
+            engine.ingest(&observation("gpu", entity("a"), ProbeStatus::Failed));
+        }
+        engine.ingest(&observation("gpu", entity("a"), ProbeStatus::NotApplicable));
+        engine.ingest(&observation("gpu", entity("a"), ProbeStatus::Ok));
+        assert_eq!(
+            engine
+                .state(entity("a"))
+                .unwrap()
+                .component(StateComponent::Accelerator),
+            Health::NotApplicable
+        );
+        engine.ingest(&observation("gpu", entity("a"), ProbeStatus::Ok));
+        assert_eq!(engine.state(entity("a")).unwrap().overall, Health::Healthy);
+    }
+
+    #[test]
+    fn unchanged_health_still_refreshes_its_evidence_and_counters() {
+        let mut engine = engine_with("metrics", ProbeMapping::immediate(StateComponent::Host));
+        engine.ingest(&observation("metrics", entity("a"), ProbeStatus::Ok));
+        let since = engine.state(entity("a")).unwrap().components[&StateComponent::Host].since;
+        let latest = observation("metrics", entity("a"), ProbeStatus::Ok);
+        assert!(engine.ingest(&latest).is_none());
+        let component = &engine.state(entity("a")).unwrap().components[&StateComponent::Host];
+        assert_eq!(component.evidence, vec![latest.id]);
+        assert_eq!(component.consecutive_successes, 2);
+        assert_eq!(component.since, since);
     }
 
     #[test]

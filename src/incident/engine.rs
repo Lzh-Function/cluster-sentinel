@@ -136,7 +136,7 @@ pub fn severity_for(diagnosis: &Diagnosis, graph: &DependencyGraph) -> Severity 
 }
 
 /// Correlates diagnoses into incidents and tracks their lifecycle.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct IncidentEngine {
     incidents: BTreeMap<String, Incident>,
 }
@@ -150,7 +150,14 @@ impl IncidentEngine {
     /// Load existing incidents, for resuming after a restart.
     pub fn seed(&mut self, incidents: impl IntoIterator<Item = Incident>) {
         for incident in incidents {
-            self.incidents.insert(incident.fingerprint.clone(), incident);
+            let keep_existing = self.incidents.get(&incident.fingerprint).is_some_and(|existing| {
+                (existing.status.is_active() && !incident.status.is_active())
+                    || (existing.status.is_active() == incident.status.is_active()
+                        && existing.started_at >= incident.started_at)
+            });
+            if !keep_existing {
+                self.incidents.insert(incident.fingerprint.clone(), incident);
+            }
         }
     }
 
@@ -186,6 +193,31 @@ impl IncidentEngine {
         graph: &DependencyGraph,
         states: &BTreeMap<EntityId, EntityState>,
     ) -> IncidentUpdate {
+        self.reconcile_verified(diagnoses, graph, |incident| {
+            let healthy = |entities: &[EntityId]| {
+                !entities.is_empty()
+                    && entities.iter().all(|e| {
+                        states
+                            .get(e)
+                            .is_some_and(|s| s.overall == crate::state::Health::Healthy)
+                    })
+            };
+            (
+                healthy(&incident.suspected_root_entities),
+                healthy(&incident.affected_entities)
+                    && (incident.suspected_root_entities.is_empty() || healthy(&incident.suspected_root_entities)),
+            )
+        })
+    }
+
+    /// Correlate using a recovery verdict grounded in fresh observations.
+    /// The first boolean proves root recovery, the second full recovery.
+    pub fn reconcile_verified(
+        &mut self,
+        diagnoses: &[Diagnosis],
+        graph: &DependencyGraph,
+        recovered: impl Fn(&Incident) -> (bool, bool),
+    ) -> IncidentUpdate {
         let mut update = IncidentUpdate::default();
         let mut grouped: BTreeMap<String, Vec<&Diagnosis>> = BTreeMap::new();
         for diagnosis in diagnoses {
@@ -209,6 +241,12 @@ impl IncidentEngine {
                     update.opened.push(incident);
                 }
                 Some(existing) => {
+                    if existing.status == IncidentStatus::Recovering {
+                        existing.status = IncidentStatus::Open;
+                        existing
+                            .timeline
+                            .push(TimelineEvent::new("recovery_failed", "the fault is diagnosed again"));
+                    }
                     if existing.status == IncidentStatus::Resolved {
                         existing.status = IncidentStatus::Open;
                         existing.ended_at = None;
@@ -234,46 +272,32 @@ impl IncidentEngine {
                 continue;
             }
 
-            let unrecovered = unrecovered_entities(incident, states);
-
-            if unrecovered.is_empty() {
+            let (root_recovered, fully_recovered) = recovered(incident);
+            if fully_recovered {
                 incident.resolve();
                 update.resolved.push(incident.clone());
-            } else if incident.status != IncidentStatus::Recovering {
-                // IMPLEMENTATION.md §75: the root coming back is not the end of
-                // the incident while things that depend on it are still broken.
-                // Closing here would tell an operator it was over while people
-                // still could not work.
+            } else if root_recovered && incident.status != IncidentStatus::Recovering {
                 incident.status = IncidentStatus::Recovering;
                 incident.timeline.push(TimelineEvent::new(
                     "recovering",
-                    format!(
-                        "the cause is no longer diagnosed; {} entity/entities still impaired",
-                        unrecovered.len()
-                    ),
+                    "the root recovered; dependent recovery is not yet confirmed",
                 ));
                 update.recovering.push(incident.clone());
+            } else {
+                if !root_recovered && incident.status == IncidentStatus::Recovering {
+                    incident.status = IncidentStatus::Open;
+                    incident.timeline.push(TimelineEvent::new(
+                        "recovery_failed",
+                        "root recovery can no longer be confirmed",
+                    ));
+                }
+                // Keep offering unsent openings while evidence is missing.
+                update.updated.push(incident.clone());
             }
         }
 
         update
     }
-}
-
-/// Entities in an incident that are still not healthy.
-fn unrecovered_entities(incident: &Incident, states: &BTreeMap<EntityId, EntityState>) -> Vec<EntityId> {
-    incident
-        .affected_entities
-        .iter()
-        .copied()
-        .filter(|entity| {
-            states
-                .get(entity)
-                .map(|state| state.overall.is_problem())
-                // No state at all is not evidence of a problem.
-                .unwrap_or(false)
-        })
-        .collect()
 }
 
 /// Whether a resolved incident is recent enough to reopen.
@@ -387,6 +411,39 @@ mod tests {
                 (id, state)
             })
             .collect()
+    }
+
+    #[test]
+    fn disappearing_diagnoses_do_not_prove_recovery_for_unknown_or_missing_state() {
+        for states in [
+            BTreeMap::new(),
+            BTreeMap::from([(host("a"), EntityState::unknown(host("a")))]),
+        ] {
+            let mut engine = IncidentEngine::new();
+            engine.reconcile(
+                &[diagnosis(kind::HOST_UNREACHABLE, "a", &["a"])],
+                &DependencyGraph::new(),
+                &BTreeMap::new(),
+            );
+            let update = engine.reconcile(&[], &DependencyGraph::new(), &states);
+            assert!(update.resolved.is_empty() && update.recovering.is_empty());
+            assert_eq!(engine.active().next().unwrap().status, IncidentStatus::Open);
+        }
+    }
+
+    #[test]
+    fn a_recovering_incident_returns_to_open_when_the_fault_is_diagnosed_again() {
+        let mut engine = IncidentEngine::new();
+        let diagnoses = [diagnosis(kind::SHARED_STORAGE_FAILURE, "fs1", &["c1"])];
+        engine.reconcile(&diagnoses, &DependencyGraph::new(), &BTreeMap::new());
+        let mut states = healthy(&["fs1"]);
+        states.extend(impaired(&["c1"]));
+        assert_eq!(
+            engine.reconcile(&[], &DependencyGraph::new(), &states).recovering.len(),
+            1
+        );
+        let update = engine.reconcile(&diagnoses, &DependencyGraph::new(), &states);
+        assert_eq!(update.updated[0].status, IncidentStatus::Open);
     }
 
     #[test]
@@ -539,7 +596,7 @@ mod tests {
         let diagnoses = vec![diagnosis(kind::SHARED_STORAGE_FAILURE, "fs1", &["c1", "c2"])];
         engine.reconcile(&diagnoses, &graph_with_fan_out(), &impaired(&["c1", "c2"]));
 
-        let update = engine.reconcile(&[], &graph_with_fan_out(), &healthy(&["c1", "c2"]));
+        let update = engine.reconcile(&[], &graph_with_fan_out(), &healthy(&["fs1", "c1", "c2"]));
 
         assert_eq!(update.resolved.len(), 1);
         assert_eq!(update.resolved[0].status, IncidentStatus::Resolved);
@@ -556,7 +613,7 @@ mod tests {
         engine.reconcile(&diagnoses, &graph_with_fan_out(), &impaired(&["c1", "c2"]));
 
         // The cause is no longer diagnosed, but one client has not recovered.
-        let mut states = healthy(&["c1"]);
+        let mut states = healthy(&["fs1", "c1"]);
         states.extend(impaired(&["c2"]));
         let update = engine.reconcile(&[], &graph_with_fan_out(), &states);
 
@@ -572,11 +629,11 @@ mod tests {
         let diagnoses = vec![diagnosis(kind::SHARED_STORAGE_FAILURE, "fs1", &["c1", "c2"])];
         engine.reconcile(&diagnoses, &graph_with_fan_out(), &impaired(&["c1", "c2"]));
 
-        let mut states = healthy(&["c1"]);
+        let mut states = healthy(&["fs1", "c1"]);
         states.extend(impaired(&["c2"]));
         engine.reconcile(&[], &graph_with_fan_out(), &states);
 
-        let update = engine.reconcile(&[], &graph_with_fan_out(), &healthy(&["c1", "c2"]));
+        let update = engine.reconcile(&[], &graph_with_fan_out(), &healthy(&["fs1", "c1", "c2"]));
         assert_eq!(update.resolved.len(), 1);
     }
 

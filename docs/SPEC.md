@@ -1,13 +1,13 @@
 # Cluster Sentinel
-## 汎用クラスタインフラ監視・障害検知・インシデント診断基盤
+## クラスタの監視と障害診断の仕様
 
-**Version:** 0.3  
-**Status:** Architecture Specification  
-**Initial production target:** `example_cluster` および関連インフラ  
-**Primary implementation language:** Rust  
-**Deployment model:** Single executable binary per architecture  
-**Initial platform:** Linux / systemd / Slurm / NFS  
-**Design goal:** 現在のクラスタ構成に実用的に適合しつつ、将来的な計算・ストレージ・ネットワーク・scheduler構成変更に対して、core architectureを変更せず設定・integration・probe追加のみで追従できる監視基盤を構築する。
+仕様のバージョンは0.3である。最初の導入対象は`example_cluster`と関連インフラとする。
+Rustで実装し、CPUアーキテクチャごとに単一バイナリを配布する。
+初期の対象環境はLinux、systemd、Slurm、NFSとする。
+
+計算ノード、ストレージ、ネットワーク、スケジューラの構成が変わっても、
+設定や連携機能、probeの追加で対応し、共通処理の変更を不要にすることを目標とする。
+現在の設定方法と動作は[設定リファレンス](CONFIGURATION.md)と[運用ガイド](OPERATIONS.md)を参照する。
 
 ---
 
@@ -31,25 +31,25 @@ Cluster Sentinelは、研究用計算クラスタを構成する各種インフ�
 
 までを行う分散監視・診断システムである。
 
-主な対象障害:
+主な対象障害
 
 - 計算ノードが停止した
 - OSは起動しているがSSH不能
-- SSHは可能だが `slurmd` が停止
-- Hostは正常だがSlurm上のみ `DRAIN`
+- SSHは可能だが`slurmd`が停止
+- Hostは正常だがSlurm上のみ`DRAIN`
 - Slurm controllerのみ異常
-- NFS serverが停止
+- NFSサーバーが停止
 - NFSは応答するがI/Oが極端に遅い
-- 共有ストレージ障害で複数compute nodeが連鎖的に異常化
+- 共有ストレージ障害で複数計算ノードが連鎖的に異常化
 - GPU障害
-- local storage / NVMe異常
-- network path固有障害
-- monitoring controller自身の障害
-- reboot後に原因情報が失われる
+- ローカルストレージ・NVMeの異常
+- 通信経路固有障害
+- 監視controller自身の障害
+- 再起動後に原因情報が失われる
 
 ---
 
-# 2. v0.3における最重要変更
+# 2. v0.3での監視モデルの変更
 
 v0.2まではHostを中心概念としていた。
 
@@ -59,7 +59,7 @@ v0.3では、Hostを含むより一般的な、
 ManagedEntity
 ```
 
-をcore modelとする。
+を共通のデータモデルとする。
 
 これにより、
 
@@ -76,19 +76,9 @@ External Dependency
 
 ---
 
-# 3. Architecture Principle
+# 3. 技術固有の処理と共通処理の分離
 
-Cluster Sentinel coreは、
-
-```text
-Slurm monitor
-NFS monitor
-GPU monitor
-```
-
-ではない。
-
-coreが扱うのは以下だけである。
+共通処理では技術ごとの監視を実装せず、以下のデータ型を扱う。
 
 ```text
 Entity
@@ -101,11 +91,15 @@ Diagnosis
 Incident
 ```
 
-Slurm、NFS、GPU等はすべてintegrationとして実装する。
+Slurm、NFS、GPU等はすべて連携機能として実装する。
 
 ---
 
-# 4. Top-Level Model
+# 4. 全体のデータモデル
+
+コードでは、監視対象をEntity、機能情報をCapability、検査をProbe、
+観測記録をObservation、状態をState、診断をDiagnosis、障害の管理記録をIncidentと呼ぶ。
+以下の型名と図では、この名称を使う。
 
 ```text
 Environment
@@ -130,7 +124,7 @@ Environment
 
 ---
 
-# 5. Environment
+# 5. Environment（環境）
 
 最上位概念を、
 
@@ -142,7 +136,7 @@ Environment
 
 現在は1環境のみでもよい。
 
-例:
+例
 
 ```text
 example-lab
@@ -161,18 +155,18 @@ example-lab
 
 ---
 
-# 6. Cluster
+# 6. Cluster（クラスタ）
 
 ClusterはManagedEntityの集合を論理的にグループ化する。
 
-現在:
+現在
 
 ```text
 Cluster:
 example_cluster
 ```
 
-ただしClusterとSlurm Clusterを同義にしてはならない。
+ただしSentinelのClusterとSlurmのクラスタを同じ概念として扱わない。
 
 将来的に、
 
@@ -186,11 +180,11 @@ monitoring domain
 
 ---
 
-# 7. ManagedEntity
+# 7. ManagedEntity（監視対象）
 
 Sentinelが状態を持つ監視対象。
 
-基本属性:
+基本属性
 
 ```text
 entity_id
@@ -205,7 +199,7 @@ discovery_sources
 
 ---
 
-# 8. Entity Types
+# 8. 監視対象の種類
 
 初期実装で定義する。
 
@@ -221,11 +215,11 @@ NetworkDevice等は将来追加可能。
 
 ---
 
-# 9. Host Entity
+# 9. ホスト
 
-物理または仮想Linux machine。
+物理または仮想Linuxホスト。
 
-例:
+例
 
 ```text
 head01
@@ -252,11 +246,11 @@ GPU
 
 ---
 
-# 10. Service Entity
+# 10. サービス
 
 Host上で動くサービスを独立entityとして扱う。
 
-例:
+例
 
 ```text
 slurmctld@head01
@@ -277,18 +271,18 @@ Service failed
 
 ---
 
-# 11. Storage Entity
+# 11. ストレージ
 
 StorageをHostとは独立して表現可能にする。
 
-現在:
+現在
 
 ```text
 filesrv01-backed-storage
 filesrv02-backed-storage
 ```
 
-将来:
+将来
 
 ```text
 Ceph cluster
@@ -302,19 +296,19 @@ ZFS pool
 
 ---
 
-# 12. Scheduler Entity
+# 12. スケジューラ
 
 Scheduler/control planeも独立entityとする。
 
-現在:
+現在
 
 ```text
 Slurm scheduler: example_cluster
 ```
 
-Host `head01` とSchedulerそのものを区別する。
+Host `head01`とSchedulerそのものを区別する。
 
-例:
+例
 
 ```text
 Host(head01)
@@ -326,11 +320,11 @@ Scheduler(example_cluster)
 
 ---
 
-# 13. ExternalDependency
+# 13. 外部の依存先
 
 Agentを直接インストールできない対象もdependencyとして表現する。
 
-例:
+例
 
 ```text
 DNS server
@@ -343,11 +337,11 @@ BMC endpoint
 
 ---
 
-# 14. Roles
+# 14. 役割ラベル
 
-Host等にhuman-readableなrole labelを設定できる。
+ホストなどに、運用者が読める役割ラベルを設定できる。
 
-例:
+例
 
 ```text
 controller
@@ -358,20 +352,20 @@ login
 storage
 ```
 
-ただしroleは**ロジック制御に使用してはならない**。
+ただし役割はロジック制御に使用してはならない。
 
 ---
 
-# 15. Role使用原則
+# 15. 役割ラベルの用途
 
-禁止:
+禁止
 
 ```text
 if role == "fileserver":
     run_nfs_probe()
 ```
 
-推奨:
+推奨
 
 ```text
 if capability == "nfs_server":
@@ -390,11 +384,11 @@ default configuration hints
 
 ---
 
-# 16. Capability Model
+# 16. Capability（機能情報）
 
 各Entityは0個以上のcapabilityを持つ。
 
-例:
+例
 
 ```text
 host.metrics
@@ -416,9 +410,9 @@ observer.peer
 
 ---
 
-# 17. Capability Composition
+# 17. 機能の組み合わせ
 
-例えば `filesrv01`:
+例えば`filesrv01`
 
 ```text
 Host(filesrv01)
@@ -435,7 +429,7 @@ journal
 observer.peer
 ```
 
-`node09`:
+`node09`
 
 ```text
 Host(node09)
@@ -454,11 +448,11 @@ observer.peer
 
 ---
 
-# 18. Capability Discovery
+# 18. 機能の自動検出
 
-Agentはruntimeでcapability候補を検出する。
+Agentは実行時にcapabilityの候補を検出する。
 
-例:
+例
 
 ```text
 slurmd exists
@@ -482,9 +476,9 @@ zpool available and pool exists
 
 ---
 
-# 19. Capability Override
+# 19. 検出結果の上書き
 
-Auto detection結果は管理者設定で、
+自動検出結果は管理者設定で、
 
 ```text
 enable
@@ -494,7 +488,7 @@ force
 
 できる。
 
-例:
+例
 
 ```toml
 [capabilities]
@@ -504,15 +498,15 @@ force
 
 ---
 
-# 20. Current Environment
+# 20. 初期導入先の環境
 
-Initial environment:
+初期環境
 
 ```text
 example-lab
 ```
 
-Initial cluster:
+初期クラスタ
 
 ```text
 example_cluster
@@ -520,15 +514,15 @@ example_cluster
 
 ---
 
-# 21. Current Hosts
+# 21. 初期監視対象のホスト
 
-Slurm controller:
+Slurm controller
 
 ```text
 head01
 ```
 
-Slurm compute:
+Slurm compute
 
 ```text
 node02
@@ -550,18 +544,18 @@ node12
 node13
 ```
 
-Non-Slurm infrastructure:
+Slurm外のインフラ
 
 ```text
 filesrv01
 filesrv02
 ```
 
-初期監視対象は計16 hosts。
+初期監視対象は計16ホスト。
 
 ---
 
-# 22. Current Slurm Configuration Characteristics
+# 22. 初期導入先のSlurm設定
 
 ```text
 SlurmctldHost=head01
@@ -579,13 +573,13 @@ SelectTypeParameters=CR_Core_Memory
 GresTypes=gpu
 ```
 
-SentinelはSlurm configurationを変更しない。
+SentinelはSlurmの設定を変更しない。
 
 ---
 
-# 23. Current Storage Domains
+# 23. 初期導入先のストレージ共有範囲
 
-filesrv01:
+filesrv01
 
 ```text
 node02
@@ -595,7 +589,7 @@ node13
 node11
 ```
 
-filesrv02:
+filesrv02
 
 ```text
 node05
@@ -605,15 +599,15 @@ node12
 node10
 ```
 
-この関係はcurrent deployment dataとして扱い、core architectureには埋め込まない。
+この関係は導入先の設定値として扱い、共通処理の構成には埋め込まない。
 
 ---
 
-# 24. DependencyGraph
+# 24. 依存グラフ
 
 すべての依存関係を汎用有向グラフとして表現する。
 
-Edge:
+Edge
 
 ```text
 source_entity
@@ -626,7 +620,7 @@ discovery_source
 
 ---
 
-# 25. Dependency Direction
+# 25. 依存関係の方向
 
 原則として、
 
@@ -642,7 +636,7 @@ A → B
 
 として扱う。
 
-例:
+例
 
 ```text
 node02
@@ -651,9 +645,9 @@ node02
 
 ---
 
-# 26. Dependency Type
+# 26. 依存関係の種類
 
-初期:
+初期
 
 ```text
 depends_on
@@ -665,15 +659,15 @@ network_reaches
 observes
 ```
 
-Integration specific metadataを付与可能。
+連携技術ごとのメタデータを付与可能。
 
 ---
 
-# 27. Arbitrary DAG
+# 27. 複数段階の依存関係
 
-DependencyGraphはNFS専用treeではない。
+DependencyGraphは、NFS以外の依存関係や複数段階の依存も扱う有向グラフとする。
 
-将来:
+将来
 
 ```text
 compute01
@@ -702,17 +696,17 @@ controller02
 
 ---
 
-# 28. Cycles
+# 28. 閉路の扱い
 
-Operational dependencyにはcycleが生じる場合もあるため、storage layer上はgeneral directed graphを許可する。
+実際の依存関係に閉路がある場合も、汎用の有向グラフとして保存する。
 
-ただしroot-cause traversal時にはvisited setを必須とし、無限再帰を禁止する。
+原因を探索するときは訪問済みの対象を記録し、閉路による無限再帰を防ぐ。
 
 ---
 
-# 29. Dynamic Grouping
+# 29. 依存先に基づくグループ分け
 
-「filesrv01-side」等のgroupをcoreに固定定義しない。
+「filesrv01-side」等のグループをcoreに固定定義しない。
 
 DependencyGraphから、
 
@@ -720,13 +714,13 @@ DependencyGraphから、
 same upstream storage dependency
 ```
 
-を共有するentity群として動的導出する。
+を共有するentityの集合として動的に求める。
 
 ---
 
-# 30. Inventory Architecture
+# 30. 監視対象一覧の作成
 
-Inventoryは複数providerから生成する。
+監視対象一覧は、複数の検出元の情報から生成する。
 
 ```text
 Inventory Provider
@@ -738,20 +732,20 @@ Inventory Provider
 
 ---
 
-# 31. Slurm Inventory Provider
+# 31. Slurmからの監視対象の検出
 
-以下からcompute node等を発見。
+以下から計算ノード等を発見。
 
 ```bash
 scontrol show nodes -o
 scontrol show partitions -o
 ```
 
-Slurm上から消えたhostを即Sentinel inventoryから削除してはならない。
+Slurm上から消えたホストを即Sentinel監視対象一覧から削除してはならない。
 
 ---
 
-# 32. Agent Registration Provider
+# 32. agentの自己登録
 
 Sentinel agentがcontrollerへ自己登録する。
 
@@ -768,9 +762,9 @@ other hosts
 
 ---
 
-# 33. Static Inventory Provider
+# 33. 設定ファイルからの監視対象の登録
 
-Agentをまだ配布していないhostもconfigで登録可能。
+Agentをまだ配布していないホストも設定で登録可能。
 
 ```toml
 [[entities.host]]
@@ -782,7 +776,7 @@ name = "filesrv02"
 
 ---
 
-# 34. Inventory Merge
+# 34. 複数の検出結果の統合
 
 同一entityが複数providerから発見された場合、
 
@@ -792,17 +786,17 @@ Agent
 Static config
 ```
 
-をmergeする。
+を統合する。
 
-Discovery sourceは保存する。
+検出元の情報も保存する。
 
 ---
 
-# 35. Entity Deletion
+# 35. 監視対象の削除
 
-Entityが一時的にdiscoveryされなくなっても自動削除しない。
+Entityが一時的に自動検出されなくなっても自動削除しない。
 
-状態:
+状態
 
 ```text
 ACTIVE
@@ -816,9 +810,9 @@ REMOVED
 
 ---
 
-# 36. Host Identity
+# 36. ホストの識別キー
 
-Host logical identity:
+ホストの識別キー
 
 ```text
 environment + stable host ID
@@ -826,15 +820,15 @@ environment + stable host ID
 
 を使用する。
 
-通常hostnameをinitial identity keyとして利用する。
+通常ホスト名を初期の識別キーとして利用する。
 
 ---
 
-# 37. IP非依存
+# 37. IPアドレスと識別キーの分離
 
-IPをhost primary keyにしてはならない。
+IPをホスト主キーにしてはならない。
 
-1 hostは、
+1ホストは、
 
 ```text
 IPv4
@@ -844,11 +838,11 @@ storage network
 InfiniBand
 ```
 
-等、複数addressを持てる。
+等、複数アドレスを持てる。
 
 ---
 
-# 38. Slurm NodeNameとHostnameの分離
+# 38. Slurm NodeNameとホスト名の分離
 
 将来、
 
@@ -858,7 +852,7 @@ Slurm NodeName != hostname
 
 でも動作すること。
 
-Mapping:
+Mapping
 
 ```text
 Host Entity
@@ -870,9 +864,9 @@ Slurm Node Identity
 
 ---
 
-# 39. Runtime Discovery
+# 39. agent起動時の自動検出
 
-Agentが取得:
+Agentが取得
 
 ```text
 hostname
@@ -895,9 +889,9 @@ ZFS
 
 ---
 
-# 40. Single Binary
+# 40. 単一バイナリ
 
-原則:
+原則
 
 ```text
 sentinel
@@ -905,7 +899,7 @@ sentinel
 
 1 executable。
 
-Subcommands:
+Subcommands
 
 ```bash
 sentinel controller
@@ -919,9 +913,9 @@ sentinel config
 
 ---
 
-# 41. Architecture-specific Binary
+# 41. CPUアーキテクチャ別のバイナリ
 
-CPU architectureが異なる場合のみ、
+CPUアーキテクチャが異なる場合のみ、
 
 ```text
 sentinel-linux-x86_64
@@ -930,29 +924,29 @@ sentinel-linux-aarch64
 
 等を生成する。
 
-マシン固有buildは禁止。
+マシン固有ビルドは禁止。
 
 ---
 
-# 42. Controller Location
+# 42. controllerの配置先
 
-Controllerを `head01` にハードコードしてはならない。
+Controllerを`head01`にハードコードしてはならない。
 
-現在:
+現在
 
 ```text
 head01
 ```
 
-はdeployment configuration上のcontrollerに過ぎない。
+は導入先の設定上のcontrollerに過ぎない。
 
 ---
 
-# 43. Multiple Sentinel Controllers
+# 43. 複数controllerへの将来対応
 
 v1でHA controllerを実装する必要はない。
 
-ただしdata model上、
+ただしデータモデル上、
 
 ```text
 1 environment = exactly 1 controller
@@ -972,11 +966,11 @@ distributed collectors
 
 ---
 
-# 44. Agent
+# 44. agentの役割
 
-全Linux hostへ同じagent binaryを配布可能とする。
+全Linuxホストへ同じagentバイナリを配布可能とする。
 
-Agent責務:
+Agentが行う処理
 
 ```text
 self observation
@@ -990,11 +984,11 @@ controller communication
 
 ---
 
-# 45. Observer Capability
+# 45. 他のホストを監視する機能
 
-`observer.peer` capabilityを持つhostは他entityへのremote probeを実施できる。
+`observer.peer` capabilityを持つホストは他entityへのremote probeを実施できる。
 
-現在推奨:
+現在推奨
 
 ```text
 head01
@@ -1005,19 +999,19 @@ compute nodes
 
 ---
 
-# 46. Peer Monitoring
+# 46. ノード間の相互監視
 
 単一中央監視だけに依存しない。
 
-各重要hostを複数observerから観測する。
+各重要ホストを複数observerから観測する。
 
 ---
 
-# 47. Peer Assignment
+# 47. 監視元の割り当て
 
-Controllerが動的にassignmentする。
+Controllerが監視元を動的に割り当てる。
 
-Default candidate:
+既定値の候補
 
 ```text
 peer degree = 3
@@ -1025,7 +1019,7 @@ peer degree = 3
 
 ---
 
-# 48. Topology-aware Assignment
+# 48. 依存関係を考慮した監視元の選択
 
 可能なら、
 
@@ -1039,9 +1033,9 @@ independent infrastructure observer
 
 ---
 
-# 49. Example
+# 49. 監視元の割り当て例
 
-node02:
+node02
 
 ```text
 node03   → same filesrv01 domain
@@ -1051,11 +1045,11 @@ filesrv02  → infrastructure observer
 
 ---
 
-# 50. Observation Quorum
+# 50. 複数の観測結果による判定
 
-単一probe failureだけでhost failureと確定しない。
+一つのprobeの失敗だけで、ホスト全体の障害と確定しない。
 
-例:
+例
 
 ```text
 head01 → node09 FAIL
@@ -1073,9 +1067,9 @@ PATH_SPECIFIC_NETWORK_FAILURE
 
 ---
 
-# 51. Host Unreachable
+# 51. ホストへの到達不能
 
-独立observer複数から失敗:
+独立observer複数から失敗
 
 ```text
 head01 → node09 FAIL
@@ -1093,7 +1087,7 @@ confidence HIGH。
 
 ---
 
-# 52. Power State
+# 52. 電源状態の判定
 
 通常ネットワークprobeから、
 
@@ -1113,9 +1107,9 @@ HOST_UNREACHABLE
 
 ---
 
-# 53. Out-of-band Future Integration
+# 53. 別系統の管理機能との将来連携
 
-将来:
+将来
 
 ```text
 IPMI
@@ -1125,7 +1119,7 @@ smart PDU
 UPS
 ```
 
-をintegration追加した場合、
+を連携機能追加した場合、
 
 ```text
 POWER_OFF_CONFIRMED
@@ -1136,11 +1130,11 @@ POWER_ON_BUT_HOST_UNRESPONSIVE
 
 ---
 
-# 54. Probe Architecture
+# 54. probeの構成
 
-Probeをcoreから疎結合化する。
+Probeの実装を共通処理から分離する。
 
-概念interface:
+概念インターフェース
 
 ```text
 Probe
@@ -1155,9 +1149,9 @@ Probe
 
 ---
 
-# 55. Probe Result
+# 55. probeの実行結果
 
-共通schema:
+共通スキーマ
 
 ```text
 probe_id
@@ -1170,7 +1164,7 @@ evidence
 error
 ```
 
-Status:
+Status
 
 ```text
 OK
@@ -1184,9 +1178,9 @@ NOT_APPLICABLE
 
 ---
 
-# 56. Probe Plugins / Integrations
+# 56. probeと連携機能
 
-初期:
+初期
 
 ```text
 Host
@@ -1201,7 +1195,7 @@ Clock
 Journal
 ```
 
-将来:
+将来
 
 ```text
 ZFS
@@ -1219,9 +1213,9 @@ Prometheus import
 
 ---
 
-# 57. Probe追加時の原則
+# 57. probe追加時の制約
 
-新しいstorage技術導入時に、
+新しいストレージ技術導入時に、
 
 ```text
 core state engine
@@ -1243,9 +1237,9 @@ new diagnosis rule
 
 ---
 
-# 58. Host Probe
+# 58. ホストの検査
 
-取得:
+取得
 
 ```text
 boot ID
@@ -1258,7 +1252,7 @@ memory pressure
 
 ---
 
-# 59. Network Probe
+# 59. ネットワークの検査
 
 ```text
 name resolution
@@ -1270,7 +1264,7 @@ service-specific TCP
 
 ---
 
-# 60. SSH Probe
+# 60. SSHの検査
 
 ```text
 TCP/22
@@ -1282,11 +1276,11 @@ local sshd service state
 
 ---
 
-# 61. Sentinel RPC
+# 61. agentの稼働確認API
 
-Agent health endpoint。
+Agentの稼働確認APIへ接続する。
 
-返却:
+返却
 
 ```text
 entity identity
@@ -1299,7 +1293,7 @@ health summary
 
 ---
 
-# 62. Service Monitoring
+# 62. サービスの監視
 
 Service entityを、
 
@@ -1315,9 +1309,9 @@ application-level probe
 
 ---
 
-# 63. Slurm Integration
+# 63. Slurmとの連携
 
-Slurmは独立integrationとして実装。
+Slurmとの連携は、独立した機能として実装する。
 
 MVPでは、
 
@@ -1332,11 +1326,11 @@ squeue
 
 ---
 
-# 64. libslurm依存
+# 64. libslurmへの依存
 
-MVPではlibslurmへcompile-time dependencyしない。
+MVPでは、コンパイル時にlibslurmへ依存しない。
 
-理由:
+理由
 
 ```text
 Slurm version compatibility
@@ -1346,16 +1340,16 @@ deployment simplicity
 
 ---
 
-# 65. Slurm Scheduler Entity
+# 65. Slurmスケジューラの管理
 
-例:
+例
 
 ```text
 Scheduler:
 example_cluster
 ```
 
-状態:
+状態
 
 ```text
 AVAILABLE
@@ -1365,11 +1359,11 @@ UNAVAILABLE
 
 ---
 
-# 66. Slurm Node Integration
+# 66. Slurmノードとの対応付け
 
-HostとSlurm Node identityを関連付ける。
+HostとSlurmノードの識別子を関連付ける。
 
-保存:
+保存
 
 ```text
 NodeName
@@ -1386,7 +1380,7 @@ AllocTRES
 
 ---
 
-# 67. Slurm-only Failure
+# 67. Slurm上だけの異常
 
 ```text
 Host       HEALTHY
@@ -1405,7 +1399,7 @@ SCHEDULER_DEGRADED
 
 ---
 
-# 68. slurmd Failure
+# 68. slurmdの停止
 
 ```text
 Host       HEALTHY
@@ -1423,9 +1417,9 @@ SLURMD_SERVICE_FAILURE
 
 ---
 
-# 69. Slurm Hardware Registration Validation
+# 69. Slurmのリソース設定の検証
 
-Agent-observed:
+agentが観測した値
 
 ```text
 CPU
@@ -1433,9 +1427,9 @@ RAM
 GPU
 ```
 
-とSlurm configurationを比較。
+とSlurmの設定を比較。
 
-Mismatch:
+Mismatch
 
 ```text
 RESOURCE_CONFIGURATION_MISMATCH
@@ -1443,9 +1437,9 @@ RESOURCE_CONFIGURATION_MISMATCH
 
 ---
 
-# 70. ReturnToService
+# 70. ReturnToServiceによる状態変化
 
-現在:
+現在
 
 ```text
 ReturnToService=1
@@ -1460,15 +1454,15 @@ DOWN
 → Slurm automatic return
 ```
 
-というtransitionを記録する。
+という状態遷移を記録する。
 
 ---
 
-# 71. Storage Integration
+# 71. ストレージとの連携
 
 StorageはNFSに限定しない。
 
-Generic abstraction:
+ストレージ共通のインターフェース
 
 ```text
 StorageEntity
@@ -1478,9 +1472,9 @@ StorageEntity
 
 ---
 
-# 72. Current NFS Model
+# 72. 初期導入先のNFS構成
 
-現在:
+現在
 
 ```text
 filesrv01 host
@@ -1494,7 +1488,7 @@ compute nodes
 
 ---
 
-# 73. NFS Client Probe
+# 73. NFSクライアントの検査
 
 ```text
 mount existence
@@ -1506,7 +1500,7 @@ active probe latency
 
 ---
 
-# 74. NFS Server Probe
+# 74. NFSサーバーの検査
 
 ```text
 service state
@@ -1518,11 +1512,11 @@ NFS health
 
 ---
 
-# 75. NFS Safety
+# 75. NFS検査の安全制約
 
-NFS障害時のblocking syscallに注意。
+NFS障害時にシステムコールから応答が戻らなくなる場合を考慮する。
 
-禁止:
+禁止
 
 ```text
 unlimited df
@@ -1532,19 +1526,19 @@ unlimited ls
 
 ---
 
-# 76. Outstanding Probe Limit
+# 76. 同時実行する検査の上限
 
-各NFS mount:
+各NFS mount
 
 ```text
 max active filesystem probe = 1
 ```
 
-前probeがstuckしていれば新規filesystem probeを起動しない。
+前回のprobeが応答しないままなら、ファイルシステムにアクセスするprobeを新たに起動しない。
 
 ---
 
-# 77. NFS Status
+# 77. NFSの状態
 
 ```text
 NFS_OK
@@ -1555,7 +1549,7 @@ NFS_STUCK
 
 ---
 
-# 78. Storage Technology Replacement
+# 78. ストレージ技術の変更
 
 将来NFSからCephFSへ変更しても、
 
@@ -1570,9 +1564,9 @@ Dependency edges updated
 
 ---
 
-# 79. ZFS Integration
+# 79. ZFSとの連携
 
-Optional。
+任意の機能とする。
 
 ```text
 pool health
@@ -1584,9 +1578,9 @@ capacity
 
 ---
 
-# 80. SMART/NVMe
+# 80. SMART・NVMeの検査
 
-Optional。
+任意の機能とする。
 
 ```text
 temperature
@@ -1598,17 +1592,17 @@ NVMe error
 
 ---
 
-# 81. GPU Integration
+# 81. GPUの検査
 
-Capability:
+Capability
 
 ```text
 gpu.nvidia
 ```
 
-MVPは `nvidia-smi` 利用可。
+MVPは`nvidia-smi`利用可。
 
-取得:
+取得
 
 ```text
 GPU count
@@ -1622,17 +1616,17 @@ power
 
 ---
 
-# 82. GPU Configuration Mismatch
+# 82. GPU設定の不一致
 
-Slurm GRES expected GPU countとobserved countを比較。
+SlurmのGRESに設定したGPU数と、実際に観測したGPU数を比較する。
 
 ---
 
-# 83. Kernel Event Integration
+# 83. カーネルイベントの収集
 
-Raw kernel/journal eventとして保存。
+カーネルやjournalの情報は、イベントとして保存する。
 
-例:
+例
 
 ```text
 OOM
@@ -1644,11 +1638,11 @@ hung task
 network down
 ```
 
-これ自体を診断結果と等価にしない。
+イベントの記録と、診断の生成は分けて扱う。
 
 ---
 
-# 84. Observation Model
+# 84. Observation（観測記録）
 
 Probeが返す事実を、
 
@@ -1656,13 +1650,13 @@ Probeが返す事実を、
 Observation
 ```
 
-としてimmutable保存する。
+として保存し、保存後は変更しない。
 
-Diagnosisとは分離。
+Diagnosisとは分けて管理する。
 
 ---
 
-# 85. Observation Example
+# 85. 観測記録の例
 
 ```text
 entity:
@@ -1680,11 +1674,11 @@ timestamp:
 
 ---
 
-# 86. State Model
+# 86. 観測結果からの状態判定
 
 Observation群からEntity component stateを導出する。
 
-例:
+例
 
 ```text
 HostState
@@ -1695,9 +1689,9 @@ SchedulerState
 
 ---
 
-# 87. Entity Overall State
+# 87. 監視対象全体の状態
 
-共通summary:
+共通概要
 
 ```text
 HEALTHY
@@ -1707,13 +1701,13 @@ MAINTENANCE
 UNKNOWN
 ```
 
-詳細classificationは別フィールド。
+状態の詳細分類は別のフィールドに保存する。
 
 ---
 
-# 88. Classification
+# 88. 状態の詳細分類
 
-例:
+例
 
 ```text
 SSH_DEGRADED
@@ -1725,9 +1719,9 @@ SERVICE_FAILURE
 
 ---
 
-# 89. State Transition
+# 89. 状態遷移
 
-状態の変化をevent化。
+状態の変化をイベントとして記録する。
 
 ```text
 HEALTHY
@@ -1739,9 +1733,9 @@ UNAVAILABLE
 
 ---
 
-# 90. Debounce / Hysteresis
+# 90. 連続失敗・成功回数による状態判定
 
-default candidate:
+既定値の候補
 
 ```text
 warning:
@@ -1758,7 +1752,7 @@ probeごとに変更可能。
 
 ---
 
-# 91. Diagnosis Engine
+# 91. 診断エンジン
 
 ObservationとDependencyGraphから、
 
@@ -1770,7 +1764,7 @@ DiagnosisCandidate
 
 ---
 
-# 92. Diagnosis Structure
+# 92. 診断のデータ構造
 
 ```text
 diagnosis_type
@@ -1784,7 +1778,7 @@ timestamp
 
 ---
 
-# 93. Confidence
+# 93. 診断の確信度
 
 ```text
 LOW
@@ -1795,17 +1789,17 @@ CONFIRMED
 
 ---
 
-# 94. Deterministic Diagnosis
+# 94. 同じ入力から同じ診断を生成する
 
-Core diagnosisはrule-based / graph-based。
+共通の診断処理はルールと依存グラフに基づく処理。
 
 LLMを必須にしない。
 
 ---
 
-# 95. Shared Dependency Correlation
+# 95. 共通の依存先に起因する障害の統合
 
-例:
+例
 
 ```text
 node02
@@ -1815,9 +1809,9 @@ node13
 node11
 ```
 
-でstorage障害が同時発生。
+でストレージ障害が同時発生。
 
-Graph:
+Graph
 
 ```text
 all → filesrv01-backed-storage
@@ -1834,7 +1828,7 @@ confidence HIGH
 
 ---
 
-# 96. Client-local Storage Failure
+# 96. クライアント単体のストレージ障害
 
 filesrv01正常。
 
@@ -1850,9 +1844,9 @@ LOCAL_STORAGE_CLIENT_FAILURE
 
 ---
 
-# 97. Scheduler-wide Incident
+# 97. スケジューラ全体の障害
 
-複数compute nodeで同時にSlurm state取得不能だが、
+複数計算ノードで同時にSlurm state取得不能だが、
 
 ```text
 Host
@@ -1862,7 +1856,7 @@ Agent
 
 は正常。
 
-`slurmctld` service異常。
+`slurmctld`サービス異常。
 
 ↓
 
@@ -1872,7 +1866,7 @@ SLURM_CONTROL_PLANE_FAILURE
 
 ---
 
-# 98. Incident Engine
+# 98. incidentの管理
 
 複数event/diagnosisを、
 
@@ -1884,7 +1878,7 @@ Incident
 
 ---
 
-# 99. Incident Structure
+# 99. incidentのデータ構造
 
 ```text
 incident_id
@@ -1901,7 +1895,7 @@ timeline
 
 ---
 
-# 100. Severity
+# 100. 重大度
 
 ```text
 INFO
@@ -1909,23 +1903,23 @@ WARNING
 CRITICAL
 ```
 
-dependency fan-out等を考慮可能。
+依存する対象の数等を考慮可能。
 
 ---
 
-# 101. Dependency-aware Severity
+# 101. 影響範囲に応じた重大度
 
-filesrv01障害:
+filesrv01障害
 
 ```text
 5 compute dependents
 ```
 
-単独compute node障害より高severityにできる。
+計算ノード1台の障害よりも重大度を高くできる。
 
 ---
 
-# 102. Incident Correlation Factors
+# 102. 複数の診断を統合する条件
 
 ```text
 temporal proximity
@@ -1939,7 +1933,7 @@ same storage
 
 ---
 
-# 103. Evidence Preservation
+# 103. 障害発生時の記録
 
 Incident発生時、
 
@@ -1958,7 +1952,7 @@ kernel events
 
 ---
 
-# 104. Ring Buffer
+# 104. 直近の観測結果の保持
 
 Agent/controllerは直近、
 
@@ -1968,13 +1962,13 @@ Agent/controllerは直近、
 
 程度の高頻度observationsを保持。
 
-configurable。
+設定で変更可能。
 
 ---
 
-# 105. Local Spool
+# 105. ローカルspool
 
-Controller unreachableでも、
+Controller到達不能でも、
 
 ```text
 self observations
@@ -1986,17 +1980,17 @@ important events
 
 ---
 
-# 106. Reconnection
+# 106. 再接続時の再送
 
-Controller復旧後、spool dataをtimestamp順に再送。
+Controller復旧後、spoolに保存したデータを時刻順に再送する。
 
-Duplicate ID等によりidempotent ingestionを保証する。
+観測ID等により同じIDを重複挿入しない取り込み処理を保証する。
 
 ---
 
-# 107. Reboot Detection
+# 107. 再起動の検出
 
-Linux boot ID変更:
+Linux boot ID変更
 
 ```text
 HOST_REBOOTED
@@ -2006,9 +2000,9 @@ HOST_REBOOTED
 
 ---
 
-# 108. Clock Skew
+# 108. 時刻ずれ
 
-Distributed timeline整合性のため、
+分散した観測履歴の時刻整合性のため、
 
 ```text
 CLOCK_SKEW
@@ -2018,26 +2012,26 @@ CLOCK_SKEW
 
 ---
 
-# 109. Controller Failure
+# 109. controllerの障害
 
 Controller自身の死活をpeerから監視。
 
 ---
 
-# 110. Fallback Alerting
+# 110. controller停止時の代替通知
 
-Current recommendation:
+現在の推奨構成
 
 ```text
 filesrv01
 filesrv02
 ```
 
-にfallback notifier capabilityを持たせる。
+にcontroller停止時の代替通知機能を持たせる。
 
 ---
 
-# 111. Notification Deduplication
+# 111. 通知の重複排除
 
 Controllerとfallback observerから同じincidentが二重通知されないよう、
 
@@ -2051,7 +2045,7 @@ deduplication key
 
 ---
 
-# 112. Notification Backends
+# 112. 通知先との連携
 
 ```text
 ntfy
@@ -2062,11 +2056,11 @@ Email
 generic webhook
 ```
 
-provider abstractionで実装。
+通知処理は、通知先ごとのインターフェースで実装する。
 
 ---
 
-# 113. Automatic Remediation
+# 113. 自動復旧の禁止
 
 v1では禁止。
 
@@ -2081,11 +2075,11 @@ mount/remount
 
 ---
 
-# 114. Recommended Actions
+# 114. 調査コマンドの提示
 
-診断結果からread-onlyな推奨調査commandを提示可能。
+診断結果から読み取り専用な推奨調査コマンドを提示可能。
 
-例:
+例
 
 ```text
 systemctl status slurmd
@@ -2095,11 +2089,11 @@ scontrol show node node09
 
 ---
 
-# 115. Security
+# 115. 認証と通信の保護
 
 Agent/controller間通信は認証必須。
 
-最終推奨:
+最終的な推奨構成
 
 ```text
 mTLS
@@ -2107,15 +2101,15 @@ mTLS
 
 ---
 
-# 116. Agent Remote Execution禁止
+# 116. agentからの遠隔コマンド実行の禁止
 
-Sentinel RPCから任意shell commandを実行可能にしてはならない。
+Sentinel RPCから任意shellコマンドを実行可能にしてはならない。
 
 Probeは事前定義済み処理だけを実行する。
 
 ---
 
-# 117. Privilege
+# 117. 実行ユーザーの権限
 
 可能な限り、
 
@@ -2123,13 +2117,13 @@ Probeは事前定義済み処理だけを実行する。
 sentinel
 ```
 
-専用user。
+専用ユーザー。
 
-read-only monitoringを基本とする。
+読み取り専用監視を基本とする。
 
 ---
 
-# 118. Optional Privileged Probes
+# 118. 追加権限が必要な検査
 
 ```text
 SMART
@@ -2142,15 +2136,15 @@ BMC
 
 ---
 
-# 119. Probe Sandbox
+# 119. probeの失敗からagentを保護する
 
-Probe failure/panicがagent全体を落とさないよう隔離する。
+probeの失敗やpanicがagent全体を停止させないよう、実行処理を隔離する。
 
 ---
 
-# 120. External Commands
+# 120. 外部コマンドの実行制限
 
-以下を実行する場合:
+以下を実行する場合
 
 ```text
 systemctl
@@ -2162,19 +2156,19 @@ zpool
 smartctl
 ```
 
-必ずtimeoutを設定する。
+必ずタイムアウトを設定する。
 
 ---
 
-# 121. NFS Exception
+# 121. NFSで応答が戻らない処理の扱い
 
-Kernel D-stateではprocess kill不能の可能性があるため、通常のcommand timeoutとは別のstuck handlingを実装する。
+カーネルのD-stateではプロセスを終了できない場合がある。通常のコマンドのタイムアウトとは別に、応答が戻らない処理を管理する。
 
 ---
 
-# 122. Resource Budget
+# 122. CPU・メモリなどの使用量
 
-Agent目標:
+Agent目標
 
 ```text
 idle CPU << 1 core
@@ -2185,9 +2179,9 @@ low network traffic
 
 ---
 
-# 123. Polling Defaults
+# 123. 検査間隔の既定値
 
-候補:
+候補
 
 ```text
 Sentinel heartbeat       5 s
@@ -2203,13 +2197,13 @@ ZFS                     60 s
 inventory              300 s
 ```
 
-jitter必須。
+検査の集中を避けるため、実行時刻にばらつきを設ける。
 
 ---
 
-# 124. Database
+# 124. データベース
 
-MVP:
+MVP
 
 ```text
 SQLite
@@ -2219,11 +2213,11 @@ WAL mode。
 
 ---
 
-# 125. Storage Abstraction
+# 125. 保存処理のインターフェース
 
-Repository interfaceを設け、
+保存処理のインターフェースを設け、
 
-将来:
+将来
 
 ```text
 PostgreSQL
@@ -2233,7 +2227,7 @@ PostgreSQL
 
 ---
 
-# 126. Core Database Entities
+# 126. DBに保存するデータ
 
 ```text
 environments
@@ -2268,35 +2262,35 @@ maintenance_windows
 
 ---
 
-# 127. Schema Versioning
+# 127. スキーマのバージョン管理
 
-Configに必須:
+Configに必須
 
 ```toml
 config_version = 1
 ```
 
-Databaseにもschema migration versionを持つ。
+Databaseにもスキーママイグレーションバージョンを持つ。
 
 ---
 
-# 128. Config Migration
+# 128. 設定形式の移行
 
-将来config format変更時、
+将来、設定形式を変更したときに、
 
 ```bash
 sentinel config migrate
 ```
 
-等でmigration可能にする。
+等でマイグレーション可能にする。
 
 ---
 
-# 129. Config Philosophy
+# 129. 実環境の構成を設定で管理する
 
-現在のcluster topologyをsource codeへ入れない。
+現在のcluster構成をソースコードへ入れない。
 
-Deployment-specific dataは、
+導入先固有の値は、
 
 ```text
 runtime discovery
@@ -2308,9 +2302,9 @@ configuration
 
 ---
 
-# 130. Minimal Agent Configuration
+# 130. 最小のagent設定
 
-例:
+例
 
 ```toml
 config_version = 1
@@ -2320,11 +2314,11 @@ environment = "example-lab"
 address = "head01:7443"
 ```
 
-Roleすらauto/manual hybridにできる。
+役割ラベルも、自動検出と手動設定を組み合わせられる設計とする。
 
 ---
 
-# 131. Controller Configuration
+# 131. controllerの設定
 
 ```toml
 config_version = 1
@@ -2346,7 +2340,7 @@ degree = 3
 
 ---
 
-# 132. Explicit Entity Config
+# 132. 監視対象の明示的な設定
 
 ```toml
 [[entities]]
@@ -2360,11 +2354,11 @@ name = "filesrv02"
 
 ---
 
-# 133. Labels
+# 133. ラベル
 
-柔軟なmetadataとしてlabelsを利用可能。
+追加の属性情報をラベルとして記録できる。
 
-例:
+例
 
 ```text
 location=entrance-side
@@ -2373,23 +2367,23 @@ rack=rack01
 storage_domain=legacy-o
 ```
 
-ただし診断coreがspecific label名に依存してはならない。
+ただし、共通の診断処理を特定のラベル名に依存させてはならない。
 
 ---
 
-# 134. Installation
+# 134. インストール
 
 ```bash
 sudo install -m 0755 sentinel /usr/local/bin/sentinel
 ```
 
-Agent:
+Agent
 
 ```bash
 sudo sentinel install agent --controller head01:7443
 ```
 
-Controller:
+Controller
 
 ```bash
 sudo sentinel install controller
@@ -2397,9 +2391,9 @@ sudo sentinel install controller
 
 ---
 
-# 135. systemd
+# 135. systemdのunit生成
 
-必要なservice/unitをinstallerが生成可能。
+インストール時に、必要なsystemdのservice/unitを生成できるようにする。
 
 ---
 
@@ -2429,9 +2423,9 @@ sentinel version
 
 ---
 
-# 137. `sentinel status`
+# 137. sentinel status
 
-例:
+例
 
 ```text
 ENVIRONMENT: example-lab
@@ -2452,7 +2446,7 @@ node09      DEGRADED
 
 ---
 
-# 138. Entity Detail
+# 138. 監視対象の詳細表示
 
 ```text
 Entity:
@@ -2474,7 +2468,7 @@ SCHEDULER_DEGRADED
 
 ---
 
-# 139. Dependency View
+# 139. 依存関係の表示
 
 ```text
 node02
@@ -2492,7 +2486,7 @@ node02
 
 MVP後。
 
-主要画面:
+主要画面
 
 ```text
 Environment overview
@@ -2505,7 +2499,7 @@ Historical state
 
 ---
 
-# 141. UI Entity Type Independence
+# 141. 監視対象の種類に依存しない画面
 
 Frontendでも、
 
@@ -2513,13 +2507,13 @@ Frontendでも、
 if hostname == filesrv01
 ```
 
-のようなspecial caseは禁止。
+のようなホスト名に依存する例外処理は禁止する。
 
-Entity metadata/capabilityでrenderする。
+Entityのメタデータとcapabilityに応じて表示する。
 
 ---
 
-# 142. Current Production Deployment
+# 142. 初期導入先の配置
 
 ```text
 head01
@@ -2546,9 +2540,9 @@ filesrv02
 
 ---
 
-# 143. Current Initial Dependency Graph
+# 143. 初期導入先の依存グラフ
 
-概念:
+概念
 
 ```text
 node02 ─┐
@@ -2565,19 +2559,19 @@ node12─┤
 node10  ─┘
 ```
 
-node01/node08/node09のstorage dependencyはruntime discoveryまたはconfigから登録する。
+node01/node08/node09のストレージdependencyは実行時自動検出または設定から登録する。
 
 ---
 
-# 144. Future Scenario: Slurm Controller Migration
+# 144. 将来の変更例Slurm controllerの移設
 
-現在:
+現在
 
 ```text
 head01
 ```
 
-将来:
+将来
 
 ```text
 control01
@@ -2585,7 +2579,7 @@ control01
 
 に移行。
 
-必要変更:
+必要変更
 
 ```text
 deployment config
@@ -2595,11 +2589,11 @@ dependency edges
 
 のみ。
 
-Core code変更不要。
+共通処理のコード変更不要。
 
 ---
 
-# 145. Future Scenario: Slurm HA
+# 145. 将来の変更例SlurmのHA化
 
 ```text
 control01
@@ -2610,25 +2604,25 @@ Slurm scheduler
 
 Service/Scheduler entityとdependency edge追加で対応する。
 
-Core architecture変更不要。
+共通処理の構成変更不要。
 
 ---
 
-# 146. Future Scenario: NFS → CephFS
+# 146. 将来の変更例NFSからCephFSへの変更
 
-旧:
+旧
 
 ```text
 NFS storage
 ```
 
-新:
+新
 
 ```text
 Ceph storage
 ```
 
-変更:
+変更
 
 ```text
 disable NFS capabilities
@@ -2641,7 +2635,7 @@ Incident engine等は変更不要。
 
 ---
 
-# 147. Future Scenario: New GPU Nodes
+# 147. 将来の変更例GPUノードの追加
 
 20台追加されても、
 
@@ -2651,13 +2645,13 @@ Agent registration
 Capability discovery
 ```
 
-でinventoryへ追加。
+で監視対象一覧へ追加。
 
-Host固有source code変更不要。
+Host固有ソースコード変更不要。
 
 ---
 
-# 148. Future Scenario: Login Nodes
+# 148. 将来の変更例ログインノードの追加
 
 ```text
 login01
@@ -2666,7 +2660,7 @@ login02
 
 追加。
 
-Capabilities:
+Capabilities
 
 ```text
 host
@@ -2679,15 +2673,15 @@ observer
 
 ---
 
-# 149. Future Scenario: InfiniBand
+# 149. 将来の変更例InfiniBandへの対応
 
-Capability:
+Capability
 
 ```text
 network.infiniband
 ```
 
-Probe:
+Probe
 
 ```text
 IB link
@@ -2701,7 +2695,7 @@ Core変更不要。
 
 ---
 
-# 150. Future Scenario: BMC
+# 150. 将来の変更例BMCへの対応
 
 ExternalDependencyまたはEndpoint Entityとして、
 
@@ -2711,11 +2705,11 @@ BMC
 
 を追加。
 
-Redfish integration追加のみ。
+Redfish連携機能追加のみ。
 
 ---
 
-# 151. Future Scenario: Multi-cluster
+# 151. 将来の変更例複数クラスタの管理
 
 ```text
 Environment: example-lab
@@ -2726,13 +2720,13 @@ cluster2
 test_cluster
 ```
 
-を同一controller/databaseで管理可能なdata modelとする。
+を同一controller/databaseで管理可能なデータモデルとする。
 
 v1でUI対応まで必須ではない。
 
 ---
 
-# 152. Test Strategy
+# 152. テスト方針
 
 ```text
 Unit tests
@@ -2744,7 +2738,7 @@ Production staged rollout
 
 ---
 
-# 153. Mock Infrastructure
+# 153. 人工的な観測結果を使うテスト
 
 任意entity/probeを、
 
@@ -2756,11 +2750,11 @@ failed
 stuck
 ```
 
-へ変更可能なsimulation backendを用意する。
+へ変更できるよう、人工的な検査結果を生成する仕組みを用意する。
 
 ---
 
-# 154. Required Simulations
+# 154. 必須の障害シミュレーション
 
 ```text
 SSH failure
@@ -2779,15 +2773,15 @@ host reboot
 
 ---
 
-# 155. Compatibility Tests
+# 155. Slurm出力の互換性テスト
 
-Unknown Slurm fieldsやversion差でparser全体が失敗しないこと。
+未知のSlurmフィールドやバージョン差でパーサー全体が失敗しないこと。
 
 ---
 
-# 156. Rollout Phase 1
+# 156. 導入段階1 controllerとSlurmの自動検出
 
-Controller + Slurm discovery。
+ControllerとSlurmによる監視対象の自動検出を実装する。
 
 ```text
 head01 only
@@ -2795,9 +2789,9 @@ head01 only
 
 ---
 
-# 157. Phase 2
+# 157. 導入段階2 agent
 
-Agent framework。
+Agentの共通処理を実装する。
 
 ```text
 node09
@@ -2806,13 +2800,13 @@ node02
 
 ---
 
-# 158. Phase 3
+# 158. 導入段階3汎用の監視モデル
 
-Generic Entity + Capability model完成。
+汎用のEntityとCapabilityのモデルを完成させる。
 
 ---
 
-# 159. Phase 4
+# 159. 導入段階4ファイルサーバー
 
 filesrv01/02。
 
@@ -2823,45 +2817,45 @@ storage dependency
 
 ---
 
-# 160. Phase 5
+# 160. 導入段階5全ホストへのagent展開
 
-全host agent展開。
-
----
-
-# 161. Phase 6
-
-Peer monitoring。
+全ホストへagentを展開する。
 
 ---
 
-# 162. Phase 7
+# 161. 導入段階6ノード間の相互監視
 
-Diagnosis + Incident。
-
----
-
-# 163. Phase 8
-
-Dependency correlation。
+ノード間の相互監視を実装する。
 
 ---
 
-# 164. Phase 9
+# 162. 導入段階7診断とincident
 
-Notifications。
+診断とincidentの管理を実装する。
 
 ---
 
-# 165. Phase 10
+# 163. 導入段階8依存関係に基づく診断の統合
+
+依存関係に基づく診断の統合を実装する。
+
+---
+
+# 164. 導入段階9通知
+
+通知を実装する。
+
+---
+
+# 165. 導入段階10 Web UI
 
 Web UI。
 
 ---
 
-# 166. MVP
+# 166. MVPの必須機能
 
-MVP必須:
+MVP必須
 
 ```text
 single Rust binary
@@ -2905,7 +2899,7 @@ CLI
 
 ---
 
-# 167. MVP Non-goals
+# 167. MVPに含めない機能
 
 ```text
 Ceph
@@ -2923,17 +2917,17 @@ LLM diagnosis
 HA Sentinel controller
 ```
 
-ただしcore architectureで追加可能であること。
+ただし、共通処理の構成を変えずに追加できること。
 
 ---
 
-# 168. Acceptance: Current Cluster
+# 168. 受け入れ条件初期導入先への配布
 
-現在の16 hostへ同一architecture用binaryを配布できる。
+現在の16ホストへ同一アーキテクチャ用バイナリを配布できる。
 
 ---
 
-# 169. Acceptance: DRAIN
+# 169. 受け入れ条件Slurm DRAIN
 
 ```text
 Host healthy
@@ -2950,21 +2944,21 @@ SCHEDULER_DEGRADED
 
 ---
 
-# 170. Acceptance: slurmd
+# 170. 受け入れ条件slurmd停止
 
-`slurmd`停止をhost failureと区別。
-
----
-
-# 171. Acceptance: SSH
-
-SSH停止をhost unreachableと区別。
+`slurmd`停止をホスト障害と区別。
 
 ---
 
-# 172. Acceptance: NFS Server
+# 171. 受け入れ条件SSH停止
 
-filesrv01のNFS service停止を、
+SSH停止をホスト到達不能と区別。
+
+---
+
+# 172. 受け入れ条件NFSサーバー停止
+
+filesrv01のNFSサービス停止を、
 
 ```text
 NFS_SERVICE_FAILURE
@@ -2974,37 +2968,37 @@ NFS_SERVICE_FAILURE
 
 ---
 
-# 173. Acceptance: Shared Storage
+# 173. 受け入れ条件共有ストレージ障害
 
-filesrv01依存node群の同時異常をshared dependency incidentへ相関。
-
----
-
-# 174. Acceptance: Client-local NFS
-
-単一clientのみ異常ならfileserver障害と誤診断しない。
+filesrv01に依存する複数ノードで同時に異常が起きた場合、共有する依存先の障害として一つのincidentにまとめる。
 
 ---
 
-# 175. Acceptance: Path Failure
+# 174. 受け入れ条件クライアント単体のNFS障害
 
-head01からのみhost unreachableならhost downと断定しない。
-
----
-
-# 176. Acceptance: Controller Failure
-
-Sentinel controller停止後もagent/peer observation継続。
+単一クライアントのみ異常ならファイルサーバー障害と誤診断しない。
 
 ---
 
-# 177. Acceptance: Reboot
+# 175. 受け入れ条件経路障害
+
+head01からだけ到達不能な場合は、ホスト全体の停止と断定しない。
+
+---
+
+# 176. 受け入れ条件controller停止
+
+Sentinel controllerの停止後も、agentの観測とノード間の相互監視を継続する。
+
+---
+
+# 177. 受け入れ条件再起動
 
 boot ID変更を正しく検出。
 
 ---
 
-# 178. Acceptance: Topology Change
+# 178. 受け入れ条件構成変更
 
 テスト環境で、
 
@@ -3013,29 +3007,29 @@ filesrv01 dependency removal
 new filesrv03 registration
 ```
 
-を行ってもcore code変更なしで新topologyを反映可能。
+を行っても共通処理のコード変更なしで新構成を反映可能。
 
 ---
 
-# 179. Acceptance: Role Independence
+# 179. 受け入れ条件役割ラベルに依存しない監視
 
-`role=fileserver` を削除しても、
+`role=fileserver`を削除しても、
 
 ```text
 storage.nfs.server
 ```
 
-capabilityが存在すればNFS monitoringが機能すること。
+capabilityが存在すればNFS監視が機能すること。
 
 ---
 
-# 180. Acceptance: Slurm Independence
+# 180. 受け入れ条件Slurm外のホスト
 
-Slurm外hostをSentinel inventoryへ正常に登録・監視できること。
+Slurm外ホストをSentinel監視対象一覧へ正常に登録・監視できること。
 
 ---
 
-# 181. Acceptance: Future Probe
+# 181. 受け入れ条件新しいprobeの追加
 
 Dummy capability/probeを追加した際、
 
@@ -3049,7 +3043,7 @@ agent architecture
 
 ---
 
-# 182. Recommended Implementation Stack
+# 182. 推奨する実装技術
 
 ```text
 Rust
@@ -3063,7 +3057,7 @@ SQLite
 rustls
 ```
 
-Frontend:
+Frontend
 
 ```text
 React
@@ -3072,7 +3066,7 @@ TypeScript
 
 ---
 
-# 183. Repository Structure
+# 183. リポジトリ構成
 
 ```text
 /
@@ -3124,7 +3118,7 @@ TypeScript
 
 ---
 
-# 184. Core Dependency Direction
+# 184. 共通処理の依存方向
 
 モジュール依存は原則、
 
@@ -3142,17 +3136,17 @@ incident
 
 とする。
 
-CoreがSlurm/NFS implementationへ逆依存してはならない。
+CoreがSlurm/NFS実装へ逆依存してはならない。
 
 ---
 
-# 185. Coding Agentへの最重要指示
+# 185. 実環境への過度な特化を避ける
 
 本プロジェクトを実装する際、
 
-**現在のexample_clusterの具体的構成に最適化しすぎてcore architectureを固定化してはならない。**
+現在のexample_clusterの具体的構成に最適化しすぎて共通処理の構成を固定化してはならない。
 
-現在のhost名、partition名、fileserver構成は、
+現在のホスト名、partition名、ファイルサーバー構成は、
 
 ```text
 fixtures
@@ -3163,89 +3157,49 @@ tests
 
 には使用してよい。
 
-しかしcore logicへ埋め込んではならない。
+しかし共通処理へ埋め込んではならない。
 
 ---
 
-# 186. 明示的禁止事項
+# 186. 禁止事項
 
 以下を禁止する。
 
-```text
-・Hostを唯一のEntity typeとして固定する
-
-・compute/fileserver/controllerを継承階層として作り込む
-
-・roleによってprobeを直接分岐する
-
-・IPをentity identityにする
-
-・Slurm NodeNameとhostnameを同一と仮定する
-
-・Slurm inventoryをSentinel inventory全体と同一視する
-
-・NFSをStorage抽象の唯一実装として扱う
-
-・filesrv01/filesrv02という名前をcore codeに書く
-
-・-o/-i partition namingにcore logicを依存させる
-
-・controller の host 名を source code へ埋め込む
-
-・1 controllerしか存在できないDB schemaにする
-
-・dependencyをtreeに限定する
-
-・1 Host = 1 Serviceと仮定する
-
-・全hostへ同じprobeを実行する
-
-・probe failureでagent全体をpanicさせる
-
-・外部commandをtimeoutなしで実行する
-
-・NFS blocking syscallを無制限に生成する
-
-・単一observer失敗でhost downを確定する
-
-・network evidenceだけでpower offを確定する
-
-・controller停止時にobservationsを失う
-
-・v1でautomatic remediationを行う
-
-・LLMをcore dependencyにする
-```
+- 監視対象の種類をHostだけに限定する
+- compute、fileserver、controllerを固定の継承階層にする
+- roleによってprobeを直接分岐する
+- IPアドレスをentityの識別キーにする
+- Slurm NodeNameとホスト名が同じと仮定する
+- Slurmのノード一覧をSentinelの監視対象一覧全体と同一視する
+- ストレージの実装をNFSだけに限定する
+- filesrv01、filesrv02という名前を共通処理のコードに書く
+- Slurmパーティション名の-o、-iに共通処理を依存させる
+- controllerのホスト名をソースコードへ埋め込む
+- controllerを1台に限定するDBスキーマにする
+- 依存関係を木構造に限定する
+- 1ホストにつきサービスは一つだけと仮定する
+- 全ホストで同じprobeを実行する
+- probeの失敗でagent全体をpanicさせる
+- 外部コマンドをタイムアウトなしで実行する
+- NFSで応答が戻らないシステムコールを無制限に起動する
+- 一つの観測元での失敗から、ホスト全体の停止と判定する
+- ネットワークの観測だけで電源断と判定する
+- controllerの停止中に観測結果を失う
+- v1で自動復旧する
+- 共通処理をLLMへ依存させる
 
 ---
 
-# 187. 最終設計原則
+# 187. 設計全体の方針
 
-Cluster Sentinelは、
-
-```text
-Slurm監視ツール
-```
-
-ではなく、
-
-```text
-汎用クラスタインフラ状態モデル
-+
-Slurm Integration
-+
-Storage Integration
-+
-Distributed Observation
-+
-Dependency-aware Incident Diagnosis
-```
-
-として構築する。
+Cluster Sentinelは、ホスト以外も扱える共通の監視モデルを使う。
+Slurmやストレージ固有の監視は、連携機能として実装する。
+複数地点の観測結果と依存関係を使って、障害を診断する。
+Slurmだけを監視するツールに設計を限定しない。
 
 ---
 
-# 188. 現在への適合性と将来互換性
+# 188. 構成変更への対応方法
 
 現在は、
 
@@ -3303,16 +3257,16 @@ Incident
 Correlation
 ```
 
-のcore architectureを原則変更しない。
+の共通処理の構成を原則変更しない。
 
 ---
 
-# 189. 完成形
+# 189. 監視と診断の全体像
 
-Cluster Sentinelは、
+計算ノード、スケジューラ、controller、ファイルサーバー、ストレージサービスをManagedEntityとして管理する。
+将来はネットワーク機器やBMCなどにも拡張する。
+capabilityに応じたprobeを複数地点から実行し、観測結果、依存関係、状態遷移を記録する。
+診断ルールで原因を判定し、関連する診断をincidentへまとめる。
+クラスタの構成が変わっても、この共通処理を使って長期運用できる設計とする。
 
-> **計算ノード、scheduler、controller、fileserver、storage service、将来的なnetwork/BMC等を汎用ManagedEntityとしてモデル化し、capabilityに応じたprobe、複数地点からの分散観測、依存関係グラフ、状態遷移、診断、インシデント相関を組み合わせることで、クラスタ構成の変化に強い長期運用可能なインフラ監視・障害診断基盤**
-
-として実装する。
-
-`example_cluster` は最初のproduction targetであるが、Sentinel coreの設計を `example_cluster` 固有のtopology、Slurm partition、host naming、NFS構成へ依存させてはならない。
+`example_cluster`を最初の本番導入先とする。共通処理の設計を、この環境固有の構成、Slurmパーティション、ホストの命名規則、NFS構成へ依存させてはならない。

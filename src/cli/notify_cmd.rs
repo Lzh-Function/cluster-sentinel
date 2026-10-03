@@ -24,20 +24,21 @@ use super::Cli;
 /// The notification a test sends.
 ///
 /// Unmistakably a test in every field a human or a filter might read. A
-/// destination that pages someone must not page them for this, and someone
-/// who does see it must know within a second that nothing is wrong.
+/// The chosen severity exercises the real formatting, including Slack's
+/// channel mention for Critical. The title must still clearly identify a test.
 fn test_notification(severity: Severity) -> Notification {
     Notification {
+        event_id: None,
         incident_id: "00000000-0000-0000-0000-000000000000".to_string(),
         fingerprint: "sentinel-test-notification".to_string(),
         trigger: Trigger::Opened,
         severity,
-        title: "[TEST] Cluster Sentinel notification test".to_string(),
-        body: "This is a test sent by `sentinel notify test`. \
-               No incident exists and nothing is wrong. \
-               It confirms that this controller can reach this destination."
+        title: "通知テスト / Cluster Sentinel".to_string(),
+        body: "sudo -u sentinel sentinel notify testで送ったテスト通知です。\n\
+               障害を検出した通知ではありません。\n\
+               このcontrollerから通知先への配信を確認しています。"
             .to_string(),
-        recommended_actions: vec!["Nothing. This is a test.".to_string()],
+        recommended_actions: vec!["通知が届いたことを確認してください。障害への対応は不要です。".to_string()],
         created_at: now(),
     }
 }
@@ -47,8 +48,9 @@ pub async fn test(cli: &Cli, provider_name: Option<&str>, severity: Option<&str>
     let config = Config::load(&cli.config)?;
 
     let severity = match severity {
-        Some(text) => Severity::parse(text)
-            .ok_or_else(|| anyhow::anyhow!("unknown severity {text:?}; expected info, warning or critical"))?,
+        Some(text) => Severity::parse(text).ok_or_else(|| {
+            anyhow::anyhow!("重大度{text:?}は無効です。info、warning、criticalのいずれかを指定してください")
+        })?,
         None => Severity::Warning,
     };
 
@@ -60,15 +62,12 @@ pub async fn test(cli: &Cli, provider_name: Option<&str>, severity: Option<&str>
     if providers.is_empty() {
         match provider_name {
             Some(name) => {
-                eprintln!(
-                    "error: no notification destination named {name:?} in {}",
-                    cli.config.display()
-                );
+                eprintln!("{}に通知先{name:?}が設定されていません。", cli.config.display());
             }
             None => {
                 eprintln!(
-                    "error: no notification destinations are configured.\n\
-                     Add one to {} and try again:\n\n\
+                    "通知先が設定されていません。\n\
+                     {}に以下の設定を追加して、もう一度実行してください。\n\n\
                     \x20   [[notification.webhooks]]\n\
                     \x20   name = \"ops\"\n\
                     \x20   url  = \"https://example.invalid/hook\"",
@@ -87,9 +86,9 @@ pub async fn test(cli: &Cli, provider_name: Option<&str>, severity: Option<&str>
 
     for provider in &providers {
         match provider.send(&notification).await {
-            Ok(()) => println!("{:<20} sent", provider.name()),
+            Ok(()) => println!("{:<20} 送信成功", provider.name()),
             Err(error) => {
-                println!("{:<20} FAILED: {error}", provider.name());
+                println!("{:<20} 送信失敗　{error}", provider.name());
                 failed += 1;
             }
         }
@@ -98,13 +97,15 @@ pub async fn test(cli: &Cli, provider_name: Option<&str>, severity: Option<&str>
     println!();
     if failed == 0 {
         println!(
-            "{} destination(s) reached. Check that the message arrived: delivery \
-             says the endpoint accepted it, not that a human will see it.",
+            "{}か所の通知先が送信を受け付けました。Slackなどの通知先で、メッセージが届いたことを確認してください。",
             providers.len()
         );
         Ok(0)
     } else {
-        println!("{failed} of {} destination(s) failed.", providers.len());
+        println!(
+            "{}か所の通知先のうち、{failed}か所で送信に失敗しました。",
+            providers.len()
+        );
         Ok(2)
     }
 }
@@ -118,9 +119,9 @@ mod tests {
         // A destination that pages someone must not page them for this, and
         // whoever does see it must know within a second that nothing is wrong.
         let notification = test_notification(Severity::Warning);
-        assert!(notification.title.contains("TEST"));
-        assert!(notification.body.contains("test"));
-        assert!(notification.body.contains("nothing is wrong"));
+        assert!(notification.title.contains("通知テスト"));
+        assert!(notification.body.contains("テスト通知"));
+        assert!(notification.body.contains("障害を検出した通知ではありません"));
     }
 
     #[test]

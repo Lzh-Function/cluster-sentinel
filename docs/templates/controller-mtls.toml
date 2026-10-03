@@ -1,13 +1,13 @@
-# Cluster Sentinel — controller（mutual TLS）
+# Cluster Sentinel、controller（mutual TLS）
 #
 # 配置先: /etc/sentinel/config.toml
 # 検証:   sudo -u sentinel sentinel config check
 #
-# controller.toml から TLS 部分だけを取り出した最小構成です。
-# entity / dependency の宣言は controller.toml を参照してください。
+# controller.tomlからTLS部分だけを取り出した最小構成です。
+# entity / dependencyの宣言はcontroller.tomlを参照してください。
 #
-# mutual TLS は、cluster credential が漏洩しても耐えられる唯一の構成です。
-# client 証明書を持たない相手は、token を提示することすらできません。
+# mutual TLSは、cluster credentialが漏洩してもtokenに加えてクライアント証明書を要求します。
+# クライアント証明書を持たない相手は、tokenを使った認証に進めません。
 
 config_version = 1
 environment = "CHANGE-ME-environment"
@@ -24,16 +24,16 @@ enabled = true
 # ===========================================================================
 # TLS
 #
-# 証明書は既存の PKI で発行してください。Sentinel は生成しません。
+# 証明書は既存のPKIで発行してください。Sentinelは生成しません。
 #
-#   cert:      controller の証明書。SAN に agent が接続に使う
+#   cert:      controllerの証明書。SANにagentが接続に使う
 #              名前またはアドレスを必ず含めること
-#   key:       その秘密鍵。0600 で sentinel ユーザーのみ読めるようにする
-#   client_ca: これを書くと client 証明書は「必須」になります。
-#              任意の client 認証は何も守りません（攻撃者は提示しないだけ）
+#   key:       その秘密鍵。0600でsentinelユーザーのみ読めるようにする
+#   client_ca: これを書くとクライアント証明書は「必須」になります。
+#              提示を任意にすると、証明書を持たない相手も接続できます
 #
-# 材料が読めない場合、controller は起動に失敗します。
-# 平文で起動して暗号化されていると誤解されるのが最悪の失敗形だからです。
+# 証明書や秘密鍵が読めない場合、controllerは起動に失敗します。
+# 暗号化が無効のまま運用されるのを防ぐためです。
 # ===========================================================================
 [tls]
 cert      = "/etc/sentinel/tls/controller.crt"
