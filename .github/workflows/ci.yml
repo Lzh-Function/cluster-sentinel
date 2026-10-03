@@ -35,6 +35,11 @@ jobs:
       - name: Tests
         run: cargo test --all
 
+      - name: Update script tests
+        run: |
+          bash -n deploy/update.sh
+          python3 tests/test_update_script.py
+
       - name: Release build
         run: cargo build --release
 
@@ -63,6 +68,16 @@ jobs:
         if: failure()
         working-directory: dev/compose
         run: docker compose logs --tail 200
+
+      - name: Save acceptance failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-failure-evidence
+          path: dev/compose/.state/acceptance
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Clean up
         if: always()

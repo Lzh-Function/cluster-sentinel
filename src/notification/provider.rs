@@ -93,16 +93,16 @@ fn plain_section(text: &str) -> serde_json::Value {
     serde_json::json!({"type": "section", "text": {"type": "plain_text", "text": text, "emoji": false}})
 }
 
-/// Pack whole paragraphs/steps, never splitting a command into an invalid fragment.
-fn grouped_sections(parts: impl IntoIterator<Item = String>, omitted: &str) -> Vec<String> {
+/// Pack whole paragraphs, reporting anything that cannot fit.
+fn grouped_sections(parts: impl IntoIterator<Item = String>) -> (Vec<String>, bool) {
     let mut groups = Vec::new();
     let mut group = String::new();
+    let mut omitted = false;
     for part in parts {
-        let part = if part.chars().count() > SLACK_SECTION_LIMIT {
-            omitted.to_string()
-        } else {
-            part
-        };
+        if part.chars().count() > SLACK_SECTION_LIMIT {
+            omitted = true;
+            continue;
+        }
         if !group.is_empty() && group.chars().count() + 2 + part.chars().count() > SLACK_SECTION_LIMIT {
             groups.push(std::mem::take(&mut group));
         }
@@ -114,7 +114,112 @@ fn grouped_sections(parts: impl IntoIterator<Item = String>, omitted: &str) -> V
     if !group.is_empty() {
         groups.push(group);
     }
-    groups
+    (groups, omitted)
+}
+
+fn rich_section(text: &str) -> serde_json::Value {
+    serde_json::json!({"type": "rich_text_section", "elements": [{"type": "text", "text": text}]})
+}
+
+fn action_description(description: &str) -> String {
+    if let Some((location, check)) = description.split_once("で、") {
+        format!(
+            "実行先　{location}\n{}",
+            check.replace('。', "。\n").trim_end_matches('\n')
+        )
+    } else {
+        description.replace('。', "。\n").trim_end_matches('\n').to_string()
+    }
+}
+
+/// New instructions contain a description followed by a newline and commands.
+/// Older persisted diagnoses can contain only a command, or only guidance.
+fn action_elements(action: &str, number: Option<usize>) -> Vec<serde_json::Value> {
+    let first_word = action.split_whitespace().next().unwrap_or_default();
+    let is_command = matches!(
+        first_word,
+        "sudo"
+            | "sentinel"
+            | "systemctl"
+            | "journalctl"
+            | "scontrol"
+            | "sinfo"
+            | "ss"
+            | "ip"
+            | "ping"
+            | "ssh"
+            | "curl"
+            | "nc"
+            | "cat"
+            | "ls"
+            | "df"
+            | "ps"
+            | "pgrep"
+            | "findmnt"
+            | "mount"
+            | "exportfs"
+            | "nvidia-smi"
+            | "timeout"
+    );
+    let (description, command) = if is_command {
+        ("確認コマンド", Some(action))
+    } else if let Some((description, command)) = action.split_once('\n') {
+        (description, Some(command))
+    } else {
+        (action, None)
+    };
+    let description = action_description(description);
+    let description = match number {
+        Some(number) => format!("{number}. {description}"),
+        None => description.to_string(),
+    };
+    let mut elements = vec![rich_section(&description)];
+    if let Some(command) = command.filter(|command| !command.trim().is_empty()) {
+        // Text elements are literal: quotes, backticks and Slack mention syntax
+        // remain part of the command, without escaping or changing copy/paste.
+        elements.push(serde_json::json!({
+            "type": "rich_text_preformatted",
+            "elements": [{"type": "text", "text": command}]
+        }));
+    }
+    elements
+}
+
+/// Pack complete instructions into rich text blocks, never cutting a command.
+fn grouped_actions(actions: &[String]) -> (Vec<serde_json::Value>, bool) {
+    let mut groups = Vec::new();
+    let mut group = Vec::new();
+    let mut group_length = 0;
+    let mut omitted = false;
+    for (index, action) in actions.iter().enumerate() {
+        let elements = action_elements(action, Some(index + 1));
+        let length: usize = elements
+            .iter()
+            .flat_map(|element| element["elements"].as_array().into_iter().flatten())
+            .filter_map(|element| element["text"].as_str())
+            .map(|text| text.chars().count())
+            .sum::<usize>()
+            + elements.len().saturating_sub(1);
+        if length > SLACK_SECTION_LIMIT {
+            omitted = true;
+            continue;
+        }
+        if !group.is_empty() && group_length + 3 + length > SLACK_SECTION_LIMIT {
+            groups.push(serde_json::json!({"type": "rich_text", "elements": group}));
+            group = Vec::new();
+            group_length = 0;
+        }
+        group_length += length + usize::from(!group.is_empty()) * 3;
+        if !group.is_empty() {
+            // Separate numbered instructions, including those in the same block.
+            group.push(rich_section("\n"));
+        }
+        group.extend(elements);
+    }
+    if !group.is_empty() {
+        groups.push(serde_json::json!({"type": "rich_text", "elements": group}));
+    }
+    (groups, omitted)
 }
 
 impl WebhookProvider {
@@ -153,11 +258,8 @@ impl WebhookProvider {
 
     /// The whole notification as one block of readable text.
     ///
-    /// Carried alongside the structured fields because the destinations people
-    /// actually use want a message, not a schema: Slack refuses a payload with
-    /// no `text` outright (`missing_text_or_fallback_or_attachments`), and
-    /// Discord and Teams want the same thing under their own names. A receiver
-    /// that parses the structured fields simply ignores these.
+    /// Generic webhook destinations receive this alongside structured fields.
+    /// Slack uses only its coloured attachment, with a notification fallback.
     fn message(notification: &Notification) -> String {
         let mut text = format!("{}\n\n{}", notification.title, notification.body);
         if !notification.recommended_actions.is_empty() {
@@ -203,8 +305,10 @@ impl WebhookProvider {
     fn slack_payload(notification: &Notification) -> serde_json::Value {
         use crate::diagnosis::investigation as guide;
         let details = guide::sentinel(&format!("incident show {}", guide::quote(&notification.incident_id)));
-        let omitted = format!(
-            "表示上限のため、一部を省略しました。Sentinel controllerで、確認手順の全文を表示してください。\n{details}"
+        let omitted = guide::step(
+            "Sentinel controller",
+            "表示上限のため、一部を省略しました。次のコマンドで確認手順の全文を表示してください",
+            &details,
         );
         let mut blocks = Vec::new();
         if Self::mentions_channel(notification) {
@@ -225,40 +329,32 @@ impl WebhookProvider {
                 SLACK_SECTION_LIMIT,
             )));
         }
-        let body = grouped_sections(
+        let (body, body_omitted) = grouped_sections(
             notification
                 .body
                 .split("\n\n")
                 .filter(|p| !p.trim().is_empty())
                 .map(str::to_string),
-            &omitted,
         );
-        let mut was_omitted = body.len() > 10;
+        let mut was_omitted = body_omitted || body.len() > 10;
         blocks.extend(body.into_iter().take(10).map(|text| plain_section(&text)));
         if !notification.recommended_actions.is_empty() {
             blocks.push(plain_section("確認手順"));
-            let actions = grouped_sections(
-                notification
-                    .recommended_actions
-                    .iter()
-                    .enumerate()
-                    .map(|(index, action)| format!("{}. {action}", index + 1)),
-                &omitted,
-            );
+            let (actions, actions_omitted) = grouped_actions(&notification.recommended_actions);
             // Reserve two blocks for the overflow notice and context.
             let available = 50usize.saturating_sub(blocks.len() + 2);
-            was_omitted |= actions.len() > available;
-            blocks.extend(actions.into_iter().take(available).map(|text| plain_section(&text)));
+            was_omitted |= actions_omitted || actions.len() > available;
+            blocks.extend(actions.into_iter().take(available));
         }
         if was_omitted {
-            blocks.push(plain_section(&omitted));
+            blocks.push(serde_json::json!({"type": "rich_text", "elements": action_elements(&omitted, None)}));
         }
         blocks.push(serde_json::json!({
             "type": "context",
             "elements": [{"type": "plain_text", "text": truncated(&format!("Cluster Sentinel / 障害ID {} / {}", notification.incident_id, notification.created_at), SLACK_SECTION_LIMIT), "emoji": false}]
         }));
         // Escape external text so names, reasons and commands cannot add mentions.
-        let fallback = slack_escape(&Self::message(notification));
+        let fallback = slack_escape(&notification.title);
         let preview = if Self::mentions_channel(notification) {
             format!("<!channel>\n{fallback}")
         } else {
@@ -266,7 +362,6 @@ impl WebhookProvider {
         };
         let preview = truncated(&preview, SLACK_SECTION_LIMIT);
         serde_json::json!({
-            "text": preview,
             "unfurl_links": false,
             "unfurl_media": false,
             "attachments": [{
@@ -279,14 +374,8 @@ impl WebhookProvider {
 
     /// The JSON body sent for a notification.
     ///
-    /// Deliberately flat and self-describing: a receiver should not need to
-    /// know Sentinel's internals to route on severity or recognise a recovery.
-    ///
-    /// It also carries the message under the field names Slack, Discord and
-    /// Teams each insist on, so those work with a URL and nothing else. A
-    /// dedicated provider per service would render better -- colour, threads,
-    /// buttons -- but a webhook that needs a translator in front of it is a
-    /// webhook most people will not get working at all.
+    /// Generic webhooks retain structured fields for routing and recovery.
+    /// Slack receives a single coloured attachment with formatted commands.
     pub fn payload_for(format: WebhookFormat, notification: &Notification) -> serde_json::Value {
         match format {
             WebhookFormat::Slack => Self::slack_payload(notification),
@@ -364,17 +453,59 @@ mod tests {
         Notification::for_incident(&incident, trigger)
     }
 
+    fn block_text(block: &serde_json::Value) -> String {
+        if let Some(text) = block["text"]["text"].as_str() {
+            return text.to_string();
+        }
+        block["elements"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|element| element["elements"].as_array().into_iter().flatten())
+            .filter_map(|element| element["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn rendered_blocks(payload: &serde_json::Value) -> String {
+        payload["attachments"][0]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(block_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn commands(payload: &serde_json::Value) -> Vec<&str> {
+        payload["attachments"][0]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|block| block["elements"].as_array().into_iter().flatten())
+            .filter(|element| element["type"] == "rich_text_preformatted")
+            .map(|element| element["elements"][0]["text"].as_str().unwrap())
+            .collect()
+    }
+
     #[test]
     fn slack_gets_a_coloured_attachment_with_blocks() {
-        // Slack accepts a payload with text, blocks or attachments. This has
-        // all three routes covered, and the colour is what a person reads
-        // before any words.
+        // Without top-level blocks, top-level text is a second visible message.
+        // Keep the full notification only inside the coloured attachment.
         let payload = WebhookProvider::slack_payload(&notification(Trigger::Opened));
 
-        assert!(payload["text"].as_str().is_some_and(|t| !t.is_empty()));
+        assert!(payload.get("text").is_none());
+        assert!(payload.get("blocks").is_none());
+        assert_eq!(payload["attachments"].as_array().unwrap().len(), 1);
         let attachment = &payload["attachments"][0];
         assert!(attachment["color"].as_str().is_some_and(|c| c.starts_with('#')));
+        assert!(attachment["fallback"].as_str().is_some_and(|text| !text.is_empty()));
         assert!(attachment["blocks"].as_array().is_some_and(|b| !b.is_empty()));
+        let rendered = rendered_blocks(&payload);
+        assert_eq!(rendered.matches("the export port is not answering").count(), 1);
+        assert_eq!(rendered.matches("確認手順").count(), 1);
+        assert_eq!(rendered.matches("systemctl status nfs-server").count(), 1);
+        assert!(!attachment["fallback"].as_str().unwrap().contains("確認手順"));
     }
 
     #[test]
@@ -398,7 +529,7 @@ mod tests {
                 notification.severity = severity;
                 let payload = WebhookProvider::slack_payload(&notification);
                 let red = payload["attachments"][0]["color"] == "#d32f2f";
-                assert_eq!(payload["text"].as_str().unwrap().starts_with("<!channel>\n"), red);
+                assert!(payload.get("text").is_none());
                 assert_eq!(
                     payload["attachments"][0]["fallback"]
                         .as_str()
@@ -411,6 +542,10 @@ mod tests {
                 if red {
                     assert_eq!(first["text"]["type"], "mrkdwn");
                 }
+                assert_eq!(
+                    rendered_blocks(&payload).matches("<!channel>").count(),
+                    usize::from(red)
+                );
             }
         }
     }
@@ -421,7 +556,7 @@ mod tests {
         assert_eq!(WebhookProvider::payload(&recovering)["resolved"], false);
         let payload = WebhookProvider::slack_payload(&recovering);
         assert_eq!(payload["attachments"][0]["blocks"][0]["text"]["text"], "復旧途中");
-        assert!(payload["text"].as_str().unwrap().contains("まだ確認できていません"));
+        assert!(rendered_blocks(&payload).contains("まだ確認できていません"));
     }
 
     #[test]
@@ -436,19 +571,91 @@ mod tests {
             })
             .collect();
         let payload = WebhookProvider::slack_payload(&notification);
-        let rendered = payload["attachments"][0]["blocks"]
+        let rendered = rendered_blocks(&payload);
+        let mut offset = 0;
+        for command in commands(&payload) {
+            let next = rendered[offset..].find(command).expect("complete command");
+            offset += next + command.len();
+        }
+        assert!(!rendered.contains("一部を省略"));
+        assert_eq!(commands(&payload).len(), 40);
+    }
+
+    #[test]
+    fn commands_use_code_blocks_and_guidance_remains_literal_text() {
+        let mut notification = notification(Trigger::Opened);
+        let command =
+            "sudo -u sentinel sentinel entity show 'host/名前```<!channel>&' --json\n\nprintf '%s\\n' '<@U123>'";
+        let guidance = "SSHで入れない場合は、コンソールやBMCからログインしてください。";
+        notification.recommended_actions = vec![
+            format!("対象ホストで、接続先を確認してください。\n{command}"),
+            guidance.into(),
+            "systemctl status sshd  # on node01".into(),
+            "journalctl -u sshd -n 100  # on node01".into(),
+            "ss -lntp\nip address show".into(),
+        ];
+        let payload = WebhookProvider::slack_payload(&notification);
+        assert_eq!(
+            commands(&payload),
+            [
+                command,
+                "systemctl status sshd  # on node01",
+                "journalctl -u sshd -n 100  # on node01",
+                "ss -lntp\nip address show",
+            ]
+        );
+        let elements: Vec<_> = payload["attachments"][0]["blocks"]
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|b| b["text"]["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut offset = 0;
-        for action in &notification.recommended_actions {
-            let next = rendered[offset..].find(action).expect("complete instruction");
-            offset += next + action.len();
-        }
-        assert!(!rendered.contains("一部を省略"));
+            .filter(|block| block["type"] == "rich_text")
+            .flat_map(|block| block["elements"].as_array().into_iter().flatten())
+            .collect();
+        let guidance = elements
+            .iter()
+            .find(|element| element["elements"][0]["text"] == format!("2. {guidance}"))
+            .expect("guidance stays outside code blocks");
+        assert_eq!(guidance["type"], "rich_text_section");
+        // Every rich text leaf is literal text, never a mention or a link.
+        assert!(elements.iter().all(|element| element["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|leaf| leaf["type"] == "text")));
+        assert_eq!(
+            WebhookProvider::payload(&notification)["recommended_actions"],
+            serde_json::json!(notification.recommended_actions)
+        );
+    }
+
+    #[test]
+    fn instructions_separate_location_sentences_commands_and_next_step() {
+        let mut notification = notification(Trigger::Opened);
+        notification.recommended_actions = vec![
+            crate::diagnosis::investigation::step(
+                "node01",
+                "SSHサービスの状態を確認してください。サービス名がsshの環境ではsshdをsshに置き換えてください",
+                "sudo systemctl status sshd --no-pager -l",
+            ),
+            crate::diagnosis::investigation::step(
+                "node01",
+                "SSHのログを確認してください",
+                "sudo journalctl -u sshd -n 100 --no-pager",
+            ),
+        ];
+        let payload = WebhookProvider::slack_payload(&notification);
+        let rendered = rendered_blocks(&payload);
+        assert!(rendered.contains(
+            "1. 実行先　node01\nSSHサービスの状態を確認してください。\nサービス名がsshの環境ではsshdをsshに置き換えてください。\nsudo systemctl status sshd --no-pager -l\n\n\n2. 実行先　node01\nSSHのログを確認してください。"
+        ));
+        assert_eq!(
+            commands(&payload),
+            [
+                "sudo systemctl status sshd --no-pager -l",
+                "sudo journalctl -u sshd -n 100 --no-pager",
+            ]
+        );
+        assert!(rendered.contains("診断の確度　高\n\nthe export port is not answering\n\n障害ID"));
     }
 
     #[test]
@@ -462,12 +669,15 @@ mod tests {
         let payload = WebhookProvider::slack_payload(&notification);
         let blocks = payload["attachments"][0]["blocks"].as_array().unwrap();
         assert!(blocks.len() <= 50);
-        let texts: Vec<_> = blocks.iter().filter_map(|b| b["text"]["text"].as_str()).collect();
+        let texts: Vec<_> = blocks.iter().map(block_text).collect();
         assert!(texts
             .iter()
             .any(|t| t.contains("sudo -u sentinel sentinel incident show")));
         assert!(texts.iter().all(|t| !t.contains("巨大な名前")));
         assert!(texts.iter().all(|t| t.chars().count() <= SLACK_SECTION_LIMIT));
+        assert!(commands(&payload)
+            .iter()
+            .any(|command| command.starts_with("sudo -u sentinel sentinel incident show")));
     }
 
     #[test]
@@ -499,6 +709,7 @@ mod tests {
     fn external_text_is_literal_and_cannot_add_a_mention() {
         let mut n = notification(Trigger::Opened);
         n.body = "before ``` <!channel> after".into();
+        n.title = format!("診断更新（警告） / {}", n.body);
         n.severity = Severity::Warning;
         let payload = WebhookProvider::slack_payload(&n);
         let blocks = payload["attachments"][0]["blocks"].as_array().unwrap();
@@ -507,8 +718,9 @@ mod tests {
             .find(|b| b["text"]["text"] == n.body)
             .expect("literal body");
         assert_eq!(body["text"]["type"], "plain_text");
-        assert!(!payload["text"].as_str().unwrap().contains("<!channel>"));
-        assert!(payload["text"].as_str().unwrap().contains("&lt;!channel&gt;"));
+        let fallback = payload["attachments"][0]["fallback"].as_str().unwrap();
+        assert!(!fallback.contains("<!channel>"));
+        assert!(fallback.contains("&lt;!channel&gt;"));
     }
 
     #[test]
@@ -522,6 +734,7 @@ mod tests {
 
         let payload = WebhookProvider::slack_payload(&long);
         for block in payload["attachments"][0]["blocks"].as_array().expect("blocks") {
+            assert!(block_text(block).chars().count() <= SLACK_SECTION_LIMIT);
             if let Some(text) = block["text"]["text"].as_str() {
                 let limit = if block["type"] == "header" {
                     SLACK_HEADER_LIMIT
@@ -673,8 +886,10 @@ mod tests {
         let received = received.lock().await;
         assert_eq!(received.len(), 2);
         assert_eq!(received[0]["fingerprint"], "cause:fs1");
-        assert!(received[1]["text"].as_str().unwrap().starts_with("<!channel>\n"));
+        assert!(received[1].get("text").is_none());
+        assert_eq!(received[1]["attachments"][0]["blocks"][0]["text"]["text"], "<!channel>");
         assert_eq!(received[1]["attachments"][0]["color"], "#d32f2f");
+        assert!(commands(&received[1]).contains(&"systemctl status nfs-server"));
     }
 
     #[tokio::test]

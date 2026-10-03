@@ -39,6 +39,7 @@
 | コマンドの一覧と使い分け | [COMMANDS.md](docs/COMMANDS.md) |
 | 本番クラスタへ本格導入する | [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | 日々の運用、障害時の読み方、アップグレード | [OPERATIONS.md](docs/OPERATIONS.md) |
+| 中央と下流のノードをまとめて更新する | [更新スクリプトの使い方](docs/OPERATIONS.md#更新スクリプトを使う) |
 | 設定項目のリファレンス | [CONFIGURATION.md](docs/CONFIGURATION.md) |
 | 何をどこまで守るのか | [SECURITY.md](docs/SECURITY.md) |
 | 多数のノードへ一括配布する | [deploy/ansible/](deploy/ansible/) |

@@ -107,6 +107,27 @@ except Exception:
 
 recover() { ./scenarios/recover-all >/dev/null 2>&1; }
 
+# Capture evidence before cleanup removes the containers. SQLite's backup API
+# includes committed WAL data without stopping the controller.
+save_failure_evidence() {
+    local destination=".state/acceptance"
+    mkdir -p "${destination}"
+    say status --json > "${destination}/status.json"
+    say incident list --json > "${destination}/incidents.json"
+    say diagnose --json > "${destination}/diagnoses.json"
+    say audit --json > "${destination}/audit.json"
+    docker compose logs --no-color --tail 200 > "${destination}/containers.log" 2>&1 || true
+    cat "${destination}/incidents.json"
+    if docker compose exec -T controller python3 -c '
+import sqlite3
+with sqlite3.connect("file:/var/lib/sentinel/sentinel.db?mode=ro", uri=True) as source:
+    with sqlite3.connect("/tmp/sentinel-acceptance.db") as target:
+        source.backup(target)
+'; then
+        docker compose cp controller:/tmp/sentinel-acceptance.db "${destination}/sentinel.db" || true
+    fi
+}
+
 # --- 1-3: startup, registration, baseline ---------------------------------
 step "1-3. Startup, agent registration, healthy baseline"
 if ./scripts/up >/dev/null 2>&1; then
@@ -253,6 +274,9 @@ expect_clean
 expect_no_active_incidents
 
 # --- 18: cleanup -----------------------------------------------------------
+if (( FAILED > 0 )); then
+    save_failure_evidence || true
+fi
 step "18. Environment cleanup"
 if ./scripts/down >/dev/null 2>&1; then pass "cluster stopped cleanly"; else fail "cleanup failed"; fi
 
