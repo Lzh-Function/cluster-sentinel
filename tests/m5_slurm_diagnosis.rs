@@ -279,7 +279,7 @@ async fn a_gpu_count_mismatch_is_reported_without_calling_the_node_broken() {
         .find(|d| d.is(kind::GPU_CONFIGURATION_MISMATCH))
         .expect("mismatch diagnosed");
 
-    assert!(mismatch.summary.contains("4 GPU"), "{}", mismatch.summary);
+    assert!(mismatch.summary.contains("設定が4台"), "{}", mismatch.summary);
     assert!(mismatch.summary.contains("2"), "{}", mismatch.summary);
 
     // The node itself is still schedulable and healthy; the configuration is

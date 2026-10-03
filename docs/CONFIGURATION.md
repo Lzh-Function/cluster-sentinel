@@ -243,7 +243,7 @@ webhookの送信頻度制限を守りながら、必要な通知をすべて送�
 
 #### `format = "slack"`
 
-Slack Block Kitで送ります。色つきの帯・見出し・太字・整形済みの詳細になります。
+Slack Block Kitで送ります。日本語の見出しと異常の説明に続けて、確認手順を番号付きで表示します。各手順には、実行するホスト、確認する項目、コマンドを載せます。
 
 ```toml
 [[notification.webhooks]]
@@ -252,20 +252,19 @@ url    = "https://hooks.slack.com/services/..."
 format = "slack"
 ```
 
-| 状態 | 色 | アイコン |
+| 状態 | 色 | 見出しの表示 |
 | --- | --- | --- |
-| 復旧 | 緑 | チェックマーク |
-| critical | 赤 | 赤い丸 |
-| warning | 黄 | 黄色い丸 |
-| info | 灰 | 青い丸 |
+| `resolved` | 緑 | 復旧確認 |
+| `recovering` | 黄 | 復旧途中 |
+| `critical` | 赤 | 重大 |
+| `warning` | 黄 | 警告 |
+| `info` | 灰 | 情報 |
 
-復旧通知は重大度に関係なく緑で表示し、障害の発生通知と区別します。
+赤のCRITICAL通知では、冒頭に`@channel`を付けます。障害の発生、重大度の上昇、診断の更新が対象です。Slackのメンションとして送るため、チャンネル全体への通知になります。復旧途中と復旧完了は、障害時の重大度に関係なく黄と緑で表示し、`@channel`は付けません。
 
-見出しには重大度を表示します。要約からは`CRITICAL: `などの接頭辞を外し、
-1行目に診断の内容を表示します。
+メンションは、Slackの[通知の書式](https://docs.slack.dev/messaging/formatting-message-text/#special-mentions)に従って送ります。ホスト名やSlurmのReasonにメンションの文字列が含まれていても、追加のメンションとして扱いません。
 
-Slackは長すぎる`header`を切り詰めずに拒否するので、
-文字数はすべて上限内に収めてあります。
+長い確認手順は、コマンドを途中で切らずに複数の表示欄へ分けます。表示上限を超える場合は、省略したことと全文を確認するコマンドを表示します。Sentinelのコマンドは、controllerで`sudo -u sentinel sentinel ...`として実行してください。
 
 #### 送信される内容（`format = "generic"`）
 
@@ -287,6 +286,8 @@ Slackは長すぎる`header`を切り詰めずに拒否するので、
   "content": "..."
 }
 ```
+
+`resolved`は復旧完了時だけ`true`です。復旧途中では`trigger`が`recovering`、`resolved`が`false`になります。
 
 `text`と`content`には、全体を読める文章にしたものが入ります。
 Slack / Microsoft Teamsは`text`を、Discordは`content`を要求するため、

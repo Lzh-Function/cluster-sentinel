@@ -299,6 +299,7 @@ probeと監視元ごとに状態を判定するため、別のprobeの正常結�
 ### 実機で通知経路を確かめる
 
 宛先を設定したあと、障害を待たずに届くかどうかを確認できます。
+Slack宛は、webhookの設定を`format = "slack"`にしてください。
 
 ```bash
 sudo -u sentinel sentinel notify test
@@ -307,10 +308,10 @@ sudo -u sentinel sentinel notify test --severity critical   # 重大度を変え
 ```
 
 ```
-ops                  sent
-broken               FAILED: cannot reach http://... : error sending request
+ops                  送信成功
+broken               送信失敗　通知先http://...に接続できません。詳細　...
 
-1 of 2 destination(s) failed.
+2か所の通知先のうち、1か所で送信に失敗しました。
 ```
 
 incident、database、重複排除の記録は変更しません。
@@ -323,6 +324,19 @@ controllerから設定済みの宛先へ送信できるかを確認します。
 
 テスト通知は`min_severity`未満でも送ります。
 障害の重大度に関係なく、宛先への疎通を確認するためです。
+Slackへ`--severity critical`でテスト通知を送ると、赤の表示と冒頭の`@channel`も確認できます。このテストでもチャンネル全体へのメンションが付きます。
+
+### Slackの通知を受けたら
+
+通知の冒頭で、障害発生・診断更新・復旧途中・復旧確認のどれかを確認してください。復旧途中は、影響を受けた対象すべての復旧をまだ確認できていない状態です。
+
+確認手順の最初にあるコマンドをSentinel controllerで実行し、原因の候補、影響を受けた対象、観測時刻を確認してください。その後は、手順に書かれたホストで、サービスやログを調べてください。通知には状態や設定を変更するコマンドを載せていません。
+
+```bash
+sudo -u sentinel sentinel incident show <障害ID>
+```
+
+Slurmのノードを調べるコマンドには、ホスト名と異なる場合も登録されたNodeNameを使います。NFSのI/O検査が完了しない場合は、マウント先へのアクセスを繰り返さず、マウント情報、カーネルログ、待機中のプロセスを確認してください。復旧確認の通知では、発生時の診断と復旧履歴を確認できます。
 
 > 宛先が受け取ったことと、人が気づくことは別です。
 > 実際にメッセージが届いているかは受信側で確認してください。

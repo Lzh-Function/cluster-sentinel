@@ -187,23 +187,28 @@ impl DiagnosisRule for StorageServiceFailure {
             }
 
             let detail = if port_failed && exports_empty {
-                "its export port is not answering and it exports nothing"
+                "NFSの接続確認に失敗し、公開設定の共有ディレクトリも0件です"
             } else if port_failed {
-                "its export port is not answering"
+                "NFSの接続確認に失敗しています"
             } else {
-                "its export port answers while it exports nothing, so clients are refused rather than timed out"
+                "NFSのポートから応答を得ていますが、公開設定の共有ディレクトリが0件です。クライアントが共有にアクセスできない可能性があります"
             };
+
+            let nfs_port = port.and_then(|o| o.payload.get("port")?.as_u64()).unwrap_or(2049);
 
             diagnoses.push(
                 Diagnosis::new(kind::NFS_SERVICE_FAILURE, self.id(), Confidence::High)
                     .affecting([host.id])
                     .rooted_at([host.id])
                     .with_evidence(evidence_for(context, host.id))
-                    .with_summary(format!("{} is up but {detail}", host.canonical_name))
+                    .with_summary(format!("{}のネットワークとagentまたはSSHから応答を得ています。{detail}。", host.canonical_name))
                     .recommending(vec![
-                        format!("systemctl status nfs-server  # on {}", host.canonical_name),
-                        format!("exportfs -v  # on {}", host.canonical_name),
-                        format!("ss -lntp sport = :2049  # on {}", host.canonical_name),
+                        crate::diagnosis::investigation::entity(host),
+                        crate::diagnosis::investigation::observations(host, PROBE_SERVER_PORT, "NFSの接続先・ポート・結果・観測時刻を確認してください"),
+                        crate::diagnosis::investigation::step(&host.canonical_name, "NFSサービスの起動状態を確認してください。サービス名がnfs-kernel-serverの環境ではnfs-serverを置き換えてください", "sudo systemctl status nfs-server --no-pager -l"),
+                        crate::diagnosis::investigation::step(&host.canonical_name, "実際に公開されている共有ディレクトリと許可するクライアントを、/etc/exportsと/etc/exports.dの設定に照らして確認してください", "sudo exportfs -v"),
+                        crate::diagnosis::investigation::step(&host.canonical_name, "監視対象のNFSポートで待ち受けているプロセスを確認してください", &format!("sudo ss -lntp 'sport = :{nfs_port}'")),
+                        crate::diagnosis::investigation::step(&host.canonical_name, "NFSサービスの直近のエラーを確認してください", "sudo journalctl -u nfs-server -u nfs-kernel-server -n 100 --no-pager"),
                     ]),
             );
         }
@@ -317,14 +322,17 @@ impl DiagnosisRule for SharedStorageFailure {
                     .rooted_at(roots)
                     .with_evidence(evidence)
                     .with_summary(format!(
-                        "{} client(s) of {} are impaired together: {}",
-                        members.len(),
+                        "共有ストレージ「{}」を使う{}台で、アクセスの異常を検出しています。対象は{}です。共有元のサーバーや共通の接続経路を確認してください。",
                         entity.canonical_name,
-                        names.join(", ")
+                        members.len(),
+                        names.join("、")
                     ))
                     .recommending(vec![
-                        format!("sentinel entity show {}", entity.canonical_name),
-                        "sentinel dependency list".to_string(),
+                        crate::diagnosis::investigation::entity(entity),
+                        crate::diagnosis::investigation::step("Sentinel controller", "共有ストレージの提供元と影響を受けるホストを確認してください", &crate::diagnosis::investigation::sentinel("dependency list")),
+                        "提供元ホストのネットワーク・NFSポート・公開設定を確認してください。複数のクライアントから同じ共有に接続できない場合は、共有元と共通のネットワーク経路を調べてください。".into(),
+                        crate::diagnosis::investigation::step(&format!("影響を受けたホスト（{}）", names.join("、")), "NFSの接続先とマウント設定を比較してください。異常が報告されていないホストがあれば、その設定とも比較してください", "cat /proc/1/mounts"),
+                        crate::diagnosis::investigation::step(&format!("影響を受けたホスト（{}）", names.join("、")), "NFSの応答待ち、接続失敗、I/Oエラーの記録を確認してください", "sudo journalctl -k -n 100 --no-pager"),
                     ]),
             );
         }
@@ -406,13 +414,29 @@ impl DiagnosisRule for ClientLocalStorageFailure {
                 .unwrap_or(false);
 
             let mut actions = vec![
-                format!("findmnt -t nfs,nfs4  # on {}", host.canonical_name),
-                format!("sentinel entity show {}", host.canonical_name),
+                crate::diagnosis::investigation::entity(host),
+                crate::diagnosis::investigation::step(
+                    &host.canonical_name,
+                    "NFSの接続先とマウント設定を、同じ共有を使う他のホストと比較してください",
+                    "cat /proc/1/mounts",
+                ),
+                crate::diagnosis::investigation::step(
+                    &host.canonical_name,
+                    "NFSの応答待ち、接続失敗、I/Oエラーの記録を確認してください",
+                    "sudo journalctl -k -n 100 --no-pager",
+                ),
             ];
             if stuck {
-                actions.push(format!(
-                    "cat /proc/*/stack  # on {}, to find blocked tasks",
-                    host.canonical_name
+                actions.push("I/O検査が完了していません。応答しないマウント先へのlsやdfを繰り返すと、応答待ちのプロセスが増える場合があります。まず以下の情報で待ちの状態を調べてください。".into());
+                actions.push(crate::diagnosis::investigation::step(
+                    &host.canonical_name,
+                    "STATがDのプロセスと待機先を確認してください",
+                    "ps -eo pid,stat,wchan:32,comm",
+                ));
+                actions.push(crate::diagnosis::investigation::step(
+                    &host.canonical_name,
+                    "待機中のプロセスのスタックを確認してください。<PID>は上で確認した数値に置き換えてください",
+                    "sudo cat /proc/<PID>/stack",
                 ));
             }
 
@@ -422,11 +446,10 @@ impl DiagnosisRule for ClientLocalStorageFailure {
                     .rooted_at([host.id])
                     .with_evidence(evidence_for(context, host.id))
                     .with_summary(format!(
-                        "{}'s access to {} is impaired, but {} using the same storage {} fine",
+                        "{}で共有ストレージ「{}」へのアクセスに異常を検出しています。同じ共有を使う{}には、同じ異常が報告されていません。対象ホストのマウント設定と接続経路を確認してください。",
                         host.canonical_name,
-                        storage_names.join(", "),
-                        healthy_peers.join(", "),
-                        if healthy_peers.len() == 1 { "is" } else { "are" }
+                        storage_names.join("、"),
+                        healthy_peers.join("、")
                     ))
                     .recommending(actions),
             );
@@ -619,7 +642,11 @@ mod tests {
         let diagnoses = world.evaluate(&StorageServiceFailure);
         assert_eq!(diagnoses.len(), 1);
         assert!(diagnoses[0].is(kind::NFS_SERVICE_FAILURE));
-        assert!(diagnoses[0].summary.contains("is up but"), "{}", diagnoses[0].summary);
+        assert!(
+            diagnoses[0].summary.contains("ネットワークとagentまたはSSHから応答"),
+            "{}",
+            diagnoses[0].summary
+        );
     }
 
     #[test]
@@ -635,7 +662,7 @@ mod tests {
         let diagnoses = world.evaluate(&StorageServiceFailure);
         assert_eq!(diagnoses.len(), 1, "{diagnoses:#?}");
         assert!(
-            diagnoses[0].summary.contains("exports nothing"),
+            diagnoses[0].summary.contains("共有ディレクトリが0件"),
             "{}",
             diagnoses[0].summary
         );
@@ -755,7 +782,7 @@ mod tests {
         let diagnoses = world.evaluate(&StorageServiceFailure);
         assert_eq!(diagnoses.len(), 1, "{diagnoses:#?}");
         assert!(
-            diagnoses[0].summary.contains("exports nothing"),
+            diagnoses[0].summary.contains("共有ディレクトリが0件"),
             "{}",
             diagnoses[0].summary
         );
@@ -809,8 +836,21 @@ mod tests {
             .exports("fs-a", 0);
         let summary = world.evaluate(&StorageServiceFailure)[0].summary.clone();
 
-        assert!(!summary.contains("but the port answers but"), "{summary}");
-        assert_eq!(summary.matches(" but ").count(), 1, "{summary}");
+        assert!(summary.contains("NFSのポートから応答"), "{summary}");
+        assert!(summary.contains("共有ディレクトリが0件"), "{summary}");
+        assert!(!summary.contains("接続確認に失敗"), "{summary}");
+    }
+
+    #[test]
+    fn investigation_uses_the_observed_nfs_port() {
+        let mut world = two_domains().host_is_up("fs-a");
+        world.observations.insert(
+            Observation::new(ProbeId::new(PROBE_SERVER_PORT), host_id("fs-a"), ProbeStatus::Failed)
+                .with_payload(serde_json::json!({"port": 12049})),
+        );
+        let actions = &world.evaluate(&StorageServiceFailure)[0].recommended_actions;
+        assert!(actions.iter().any(|a| a.contains("sport = :12049")));
+        assert!(!actions.iter().any(|a| a.contains("sport = :2049")));
     }
 
     #[test]

@@ -104,39 +104,65 @@ impl Notification {
 
     /// Build a notification for an incident.
     pub fn for_incident(incident: &Incident, trigger: Trigger) -> Self {
-        let cause = if incident.suspected_root_entities.is_empty() {
-            String::new()
+        let heading = heading_for(trigger, incident.severity);
+        let summary = if trigger.is_recovery() {
+            incident
+                .primary_diagnosis()
+                .map(|d| d.diagnosis_type.label().to_string())
+                .unwrap_or_else(|| "障害".to_string())
         } else {
-            format!(" ({} suspected)", incident.suspected_root_entities.len())
+            summary_of(incident)
         };
-
-        let title = match trigger {
-            Trigger::Resolved => format!("RESOLVED: {}", summary_of(incident)),
-            Trigger::Recovering => format!("RECOVERING: {}", summary_of(incident)),
-            Trigger::Escalated => {
-                format!(
-                    "{} (escalated): {}",
-                    incident.severity.to_string().to_uppercase(),
-                    summary_of(incident)
-                )
-            }
-            _ => format!(
-                "{}: {}{cause}",
-                incident.severity.to_string().to_uppercase(),
-                summary_of(incident)
-            ),
+        let title = format!("{heading} / {summary}");
+        let mut body = match trigger {
+            Trigger::Recovering => "原因と考えられる対象の復旧を確認しました。影響を受けた対象すべての復旧は、まだ確認できていません。\n\n発生時の診断\n".to_string(),
+            Trigger::Resolved => "原因と考えられる対象と、影響を受けた対象すべての復旧を確認しました。\n\n発生時の診断\n".to_string(),
+            Trigger::DiagnosisChanged => "観測結果の更新により、障害の診断が変わりました。最新の対象と確認手順を確認してください。\n\n".to_string(),
+            _ => String::new(),
         };
-
-        let mut body = String::new();
         for diagnosis in &incident.diagnoses {
+            let confidence = match diagnosis.confidence {
+                crate::diagnosis::Confidence::Low => "低",
+                crate::diagnosis::Confidence::Medium => "中",
+                crate::diagnosis::Confidence::High => "高",
+                crate::diagnosis::Confidence::Confirmed => "直接の証拠で確認済み",
+            };
             body.push_str(&format!(
-                "{} [{}]\n{}\n\n",
-                diagnosis.diagnosis_type, diagnosis.confidence, diagnosis.summary
+                "{}\n診断の確度　{confidence}\n{}\n\n",
+                diagnosis.diagnosis_type.label(),
+                diagnosis.summary
             ));
         }
-        body.push_str(&format!("Incident: {}\n", incident.id));
-        body.push_str(&format!("Status:   {}\n", incident.status));
-        body.push_str(&format!("Evidence: {} observation(s)\n", incident.evidence.len()));
+        let status = match incident.status {
+            crate::incident::IncidentStatus::Open => "未解決",
+            crate::incident::IncidentStatus::Acknowledged => "確認済み・対応中",
+            crate::incident::IncidentStatus::Recovering => "復旧途中",
+            crate::incident::IncidentStatus::Resolved => "復旧確認済み",
+            crate::incident::IncidentStatus::Suppressed => "通知を抑止中",
+        };
+        body.push_str(&format!(
+            "障害ID　{}\n状態　{status}\n根拠となる観測　{}件\n",
+            incident.id,
+            incident.evidence.len()
+        ));
+        use crate::diagnosis::investigation as guide;
+        let mut actions = vec![guide::step(
+            "Sentinel controller",
+            if trigger == Trigger::Resolved {
+                "障害の履歴と復旧時刻を確認してください"
+            } else {
+                "原因の候補、影響を受けた対象、根拠となる観測と履歴を確認してください"
+            },
+            &guide::sentinel(&format!("incident show {}", incident.id)),
+        )];
+        if trigger != Trigger::Resolved {
+            let mut seen = std::collections::HashSet::new();
+            for action in incident.diagnoses.iter().flat_map(|d| &d.recommended_actions) {
+                if seen.insert(action) {
+                    actions.push(action.clone());
+                }
+            }
+        }
 
         Self {
             incident_id: incident.id.to_string(),
@@ -145,11 +171,7 @@ impl Notification {
             severity: incident.severity,
             title,
             body,
-            recommended_actions: incident
-                .diagnoses
-                .iter()
-                .flat_map(|d| d.recommended_actions.clone())
-                .collect(),
+            recommended_actions: actions,
             created_at: event_for(incident, trigger)
                 .map(|e| e.at)
                 .unwrap_or(incident.started_at),
@@ -158,11 +180,26 @@ impl Notification {
     }
 }
 
+pub(crate) fn heading_for(trigger: Trigger, severity: Severity) -> String {
+    let level = match severity {
+        Severity::Critical => "重大",
+        Severity::Warning => "警告",
+        Severity::Info => "情報",
+    };
+    match trigger {
+        Trigger::Opened => format!("障害発生（{level}）"),
+        Trigger::Escalated => format!("重大度上昇（{level}）"),
+        Trigger::DiagnosisChanged => format!("診断更新（{level}）"),
+        Trigger::Recovering => "復旧途中".into(),
+        Trigger::Resolved => "復旧確認".into(),
+    }
+}
+
 fn summary_of(incident: &Incident) -> String {
     incident
         .primary_diagnosis()
         .map(|d| d.summary.clone())
-        .unwrap_or_else(|| format!("incident {}", incident.fingerprint))
+        .unwrap_or_else(|| format!("障害 {}", incident.fingerprint))
 }
 
 /// Turn a reconciliation into the notifications worth sending.
@@ -284,7 +321,7 @@ mod tests {
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].trigger, Trigger::Opened);
         assert!(
-            notifications[0].title.starts_with("CRITICAL"),
+            notifications[0].title.starts_with("障害発生（重大）"),
             "{}",
             notifications[0].title
         );
@@ -355,7 +392,7 @@ mod tests {
             .find(|n| n.trigger == Trigger::Escalated)
             .expect("an escalation is news");
 
-        assert!(escalation.title.contains("escalated"), "{}", escalation.title);
+        assert!(escalation.title.contains("重大度上昇"), "{}", escalation.title);
     }
 
     #[test]
@@ -414,7 +451,7 @@ mod tests {
         resolved.resolve();
 
         let notification = Notification::for_incident(&resolved, Trigger::Resolved);
-        assert!(notification.title.starts_with("RESOLVED"), "{}", notification.title);
+        assert!(notification.title.starts_with("復旧確認"), "{}", notification.title);
         assert!(notification.trigger.is_recovery());
     }
 
@@ -444,7 +481,43 @@ mod tests {
     #[test]
     fn a_notification_carries_the_read_only_actions() {
         let notification = Notification::for_incident(&incident(Severity::Critical), Trigger::Opened);
-        assert_eq!(notification.recommended_actions, ["systemctl status nfs-server"]);
+        assert!(notification.recommended_actions[0].contains("sudo -u sentinel sentinel incident show"));
+        assert!(notification
+            .recommended_actions
+            .iter()
+            .any(|a| a == "systemctl status nfs-server"));
+    }
+
+    #[test]
+    fn common_instructions_are_deduplicated_across_diagnoses() {
+        let mut incident = incident(Severity::Critical);
+        incident.add_diagnosis(
+            Diagnosis::new(kind::SHARED_STORAGE_FAILURE, "storage.shared", Confidence::Medium).recommending(vec![
+                "systemctl status nfs-server".into(),
+                "共有設定を確認してください。".into(),
+            ]),
+        );
+        let notification = Notification::for_incident(&incident, Trigger::Opened);
+        assert_eq!(
+            notification
+                .recommended_actions
+                .iter()
+                .filter(|a| *a == "systemctl status nfs-server")
+                .count(),
+            1
+        );
+        assert!(notification.recommended_actions[0].contains(&incident.id.to_string()));
+    }
+
+    #[test]
+    fn resolved_notifications_request_history_review_instead_of_fault_investigation() {
+        let mut incident = incident(Severity::Critical);
+        incident.resolve();
+        let notification = Notification::for_incident(&incident, Trigger::Resolved);
+        assert_eq!(notification.recommended_actions.len(), 1);
+        assert!(notification.recommended_actions[0].contains("復旧時刻"));
+        assert!(notification.body.contains("発生時の診断"));
+        assert!(!notification.title.contains("not answering"));
     }
 
     #[test]

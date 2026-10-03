@@ -150,7 +150,7 @@ fn a_fileservers_export_service_failing_is_told_apart_from_the_fileserver_failin
 
     assert_eq!(service_failure.suspected_root_entities, vec![host_id("fs-a")]);
     assert!(
-        service_failure.summary.contains("is up but"),
+        service_failure.summary.contains("ネットワークとagentまたはSSHから応答"),
         "{}",
         service_failure.summary
     );

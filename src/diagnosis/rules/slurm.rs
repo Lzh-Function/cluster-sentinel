@@ -15,7 +15,7 @@
 //! that is not there.
 
 use crate::diagnosis::rules::reachability::verdicts_by_target;
-use crate::diagnosis::{kind, Confidence, Diagnosis, DiagnosisContext, DiagnosisRule, RuleId};
+use crate::diagnosis::{investigation as guide, kind, Confidence, Diagnosis, DiagnosisContext, DiagnosisRule, RuleId};
 use crate::entity::{EntityKey, EntityType};
 use crate::integrations::slurm::observe::{PROBE_CONTROLLER, PROBE_NODE};
 use crate::state::{classification, Health, StateComponent};
@@ -41,6 +41,18 @@ fn evidence_for(context: &DiagnosisContext, host: crate::entity::EntityId) -> Ve
         .into_iter()
         .map(|o| o.id)
         .collect()
+}
+
+fn node_details(context: &DiagnosisContext, host: &crate::entity::ManagedEntity) -> String {
+    let name = context
+        .payload_str(host.id, PROBE_NODE, "node_name")
+        .or_else(|| host.metadata.get("slurm")?.get("node_name")?.as_str())
+        .unwrap_or(&host.canonical_name);
+    guide::step(
+        "Slurmコマンドを使えるホスト",
+        "State・Reason・ReasonTimeと登録リソースを確認してください",
+        &format!("scontrol show node {}", guide::quote(name)),
+    )
 }
 
 /// The host is entirely healthy; only Slurm will not use it.
@@ -78,8 +90,8 @@ impl DiagnosisRule for SlurmOnlyDegradation {
 
             let reason = context
                 .payload_str(host.id, PROBE_NODE, "reason")
-                .unwrap_or("no reason recorded");
-            let state = context.payload_str(host.id, PROBE_NODE, "state").unwrap_or("unknown");
+                .unwrap_or("理由の記録なし");
+            let state = context.payload_str(host.id, PROBE_NODE, "state").unwrap_or("不明");
 
             diagnoses.push(
                 Diagnosis::new(kind::SLURM_ONLY_DEGRADATION, self.id(), Confidence::High)
@@ -87,12 +99,14 @@ impl DiagnosisRule for SlurmOnlyDegradation {
                     .rooted_at([host.id])
                     .with_evidence(evidence_for(context, host.id))
                     .with_summary(format!(
-                        "{} is healthy but Slurm has it in {state}: {reason}",
+                        "{}のネットワークとagentまたはSSHから応答を得ています。Slurmの状態は{state}で、新しいジョブの割り当てが停止されています。記録された理由は「{reason}」です。",
                         host.canonical_name
                     ))
                     .recommending(vec![
-                        format!("scontrol show node {}", host.canonical_name),
-                        format!("sentinel entity show {}", host.canonical_name),
+                        node_details(context, host),
+                        "ReasonとReasonTimeを計画作業の記録と照合してください。意図したDRAINか、異常を受けたDRAINかを確認してください。".into(),
+                        guide::entity(host),
+                        guide::step(&host.canonical_name, "計画作業による停止でなければ、slurmdのログでDRAINの理由に関係するエラーを確認してください", "sudo journalctl -u slurmd -n 100 --no-pager"),
                     ]),
             );
         }
@@ -163,7 +177,7 @@ impl DiagnosisRule for SlurmdServiceFailure {
                 roots = vec![host.id];
             }
 
-            let state = context.payload_str(host.id, PROBE_NODE, "state").unwrap_or("unknown");
+            let state = context.payload_str(host.id, PROBE_NODE, "state").unwrap_or("不明");
 
             diagnoses.push(
                 Diagnosis::new(kind::SLURMD_SERVICE_FAILURE, self.id(), Confidence::High)
@@ -171,13 +185,15 @@ impl DiagnosisRule for SlurmdServiceFailure {
                     .rooted_at(roots)
                     .with_evidence(evidence_for(context, host.id))
                     .with_summary(format!(
-                        "{} answers on the network but Slurm reports {state}; slurmd is not registering",
+                        "{}のネットワークとagentまたはSSHから応答を得ていますが、Slurmでは{state}のためジョブを割り当てられません。slurmdの応答・登録状態と、Slurmに記録された理由を確認してください。",
                         host.canonical_name
                     ))
                     .recommending(vec![
-                        format!("systemctl status slurmd  # on {}", host.canonical_name),
-                        format!("journalctl -u slurmd -n 100  # on {}", host.canonical_name),
-                        format!("scontrol show node {}", host.canonical_name),
+                        node_details(context, host),
+                        guide::step(&host.canonical_name, "slurmdが起動しているか、終了コードや起動失敗を確認してください", "sudo systemctl status slurmd --no-pager -l"),
+                        guide::step(&host.canonical_name, "controllerへの接続失敗、認証エラー、リソース登録エラーを確認してください", "sudo journalctl -u slurmd -n 100 --no-pager"),
+                        guide::entity(host),
+                        guide::observations(host, PROBE_NODE, "Slurmの状態・理由・応答の有無と観測時刻を確認してください"),
                     ]),
             );
         }
@@ -248,6 +264,22 @@ impl DiagnosisRule for SlurmControlPlaneFailure {
                 evidence.extend(evidence_for(context, *daemon));
             }
 
+            let controller_hosts: std::collections::BTreeSet<_> = daemons
+                .iter()
+                .flat_map(|daemon| context.inventory.graph().dependencies_of(*daemon))
+                .filter_map(|edge| context.entity(edge.target))
+                .filter(|entity| entity.entity_type == EntityType::Host)
+                .map(|entity| entity.canonical_name.as_str())
+                .collect();
+            let location = if controller_hosts.is_empty() {
+                "Slurm controller".to_string()
+            } else {
+                format!(
+                    "Slurm controller（{}）",
+                    controller_hosts.into_iter().collect::<Vec<_>>().join("、")
+                )
+            };
+
             diagnoses.push(
                 Diagnosis::new(kind::SLURM_CONTROL_PLANE_FAILURE, self.id(), confidence)
                     .affecting([scheduler.id])
@@ -258,13 +290,16 @@ impl DiagnosisRule for SlurmControlPlaneFailure {
                     })
                     .with_evidence(evidence)
                     .with_summary(format!(
-                        "the Slurm control plane for {} is not answering",
+                        "Slurmスケジューラ「{}」から正常な応答を得られていません。ジョブの投入や割り当てに影響する可能性があります。slurmctldと、そのホストへの接続を確認してください。",
                         scheduler.canonical_name
                     ))
                     .recommending(vec![
-                        "scontrol ping".to_string(),
-                        "systemctl status slurmctld  # on the controller".to_string(),
-                        "journalctl -u slurmctld -n 100  # on the controller".to_string(),
+                        guide::entity(scheduler),
+                        guide::observations(scheduler, PROBE_CONTROLLER, "controllerの応答結果と観測時刻を確認してください"),
+                        guide::step("Slurmコマンドを使えるホスト", "主系と待機系のcontrollerの応答を確認してください", "scontrol ping"),
+                        guide::step(&location, "ホストに接続できる場合は、slurmctldの起動状態を確認してください", "sudo systemctl status slurmctld --no-pager -l"),
+                        guide::step(&location, "設定の読み込み失敗、認証エラー、接続失敗を確認してください", "sudo journalctl -u slurmctld -n 100 --no-pager"),
+                        "Slurm controllerのホストにも接続できない場合は、コンソールやBMCでホストとネットワークの状態を確認してください。".into(),
                     ]),
             );
         }
@@ -306,7 +341,7 @@ impl DiagnosisRule for ResourceConfigurationMismatch {
             if let (Some(configured), Some(observed)) = (configured_gpus, observed_gpus) {
                 if configured != observed {
                     mismatches.push(format!(
-                        "Slurm expects {configured} GPU(s), the host reports {observed}"
+                        "GPU数はSlurmの設定が{configured}台、ホストの報告が{observed}台"
                     ));
                 }
             }
@@ -320,7 +355,7 @@ impl DiagnosisRule for ResourceConfigurationMismatch {
                     // CPUs than the machine has is a deliberate and common
                     // choice, and flagging it would be noise.
                     mismatches.push(format!(
-                        "Slurm expects {configured} CPU(s), the host reports {observed}"
+                        "CPU数はSlurmの設定が{configured}個、ホストの報告が{observed}個"
                     ));
                 }
             }
@@ -335,16 +370,38 @@ impl DiagnosisRule for ResourceConfigurationMismatch {
                 kind::RESOURCE_CONFIGURATION_MISMATCH
             };
 
+            let mut actions = vec![node_details(context, host), guide::entity(host)];
+            if configured_gpus.zip(observed_gpus).is_some_and(|(a, b)| a != b) {
+                actions.push(guide::step(
+                    &host.canonical_name,
+                    "認識されているGPUの台数と型番を、SlurmのGres設定・gres.confと比較してください",
+                    "nvidia-smi --query-gpu=index,name,uuid --format=csv",
+                ));
+            }
+            if configured_cpus.zip(observed_cpus).is_some_and(|(a, b)| a > b) {
+                actions.push(guide::step(
+                    &host.canonical_name,
+                    "CPU数とソケット・コア・スレッド構成を、Slurmの設定と比較してください",
+                    "lscpu",
+                ));
+            }
+            actions.push(guide::step(
+                &host.canonical_name,
+                "リソース登録時の不一致やGPU認識に関するエラーを確認してください",
+                "sudo journalctl -u slurmd -n 100 --no-pager",
+            ));
+
             diagnoses.push(
                 Diagnosis::new(diagnosis_type, self.id(), Confidence::High)
                     .affecting([host.id])
                     .rooted_at([host.id])
                     .with_evidence(evidence_for(context, host.id))
-                    .with_summary(format!("{}: {}", host.canonical_name, mismatches.join("; ")))
-                    .recommending(vec![
-                        format!("scontrol show node {}", host.canonical_name),
-                        format!("sentinel entity show {} --json", host.canonical_name),
-                    ]),
+                    .with_summary(format!(
+                        "{}のリソース数に不一致があります。{}です。設定と実際の認識状態を照合してください。",
+                        host.canonical_name,
+                        mismatches.join("、")
+                    ))
+                    .recommending(actions),
             );
         }
 
@@ -472,6 +529,22 @@ mod tests {
         })
     }
 
+    #[test]
+    fn investigations_use_the_slurm_node_name_not_the_host_name() {
+        let mut payload = not_responding();
+        payload["node_name"] = serde_json::json!("compute-07");
+        let world = World::new()
+            .with_host("server-07")
+            .healthy_host_evidence("server-07")
+            .slurm_node("server-07", ProbeStatus::Failed, payload);
+        let actions = &world.evaluate(&SlurmdServiceFailure)[0].recommended_actions;
+        assert!(actions.iter().any(|a| a.contains("scontrol show node 'compute-07'")));
+        assert!(!actions.iter().any(|a| a.contains("scontrol show node 'server-07'")));
+        assert!(actions
+            .iter()
+            .any(|a| a.contains("server-07で") && a.contains("systemctl status slurmd")));
+    }
+
     // --- SLURM_ONLY_DEGRADATION ------------------------------------------
 
     #[test]
@@ -569,7 +642,7 @@ mod tests {
         assert_eq!(diagnoses.len(), 1);
         assert!(diagnoses[0].is(kind::SLURMD_SERVICE_FAILURE));
         assert!(
-            diagnoses[0].summary.contains("answers on the network"),
+            diagnoses[0].summary.contains("ネットワークとagentまたはSSHから応答"),
             "{}",
             diagnoses[0].summary
         );
@@ -695,7 +768,7 @@ mod tests {
         let diagnoses = world.evaluate(&ResourceConfigurationMismatch);
         assert_eq!(diagnoses.len(), 1);
         assert!(diagnoses[0].is(kind::GPU_CONFIGURATION_MISMATCH));
-        assert!(diagnoses[0].summary.contains("4 GPU"), "{}", diagnoses[0].summary);
+        assert!(diagnoses[0].summary.contains("設定が4台"), "{}", diagnoses[0].summary);
     }
 
     #[test]

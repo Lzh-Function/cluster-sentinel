@@ -13,7 +13,7 @@
 //! Both rules require positive evidence that the host is answering *by some
 //! other means*, so neither can fire for a host that has simply gone away.
 
-use crate::diagnosis::{kind, Confidence, Diagnosis, DiagnosisContext, DiagnosisRule, RuleId};
+use crate::diagnosis::{investigation as guide, kind, Confidence, Diagnosis, DiagnosisContext, DiagnosisRule, RuleId};
 use crate::entity::{EntityId, EntityType};
 use crate::state::{Health, StateComponent};
 
@@ -74,13 +74,14 @@ impl DiagnosisRule for SentinelAgentFailure {
                     .rooted_at([host.id])
                     .with_evidence(evidence_for(context, host.id))
                     .with_summary(format!(
-                        "the Sentinel agent on {} is not answering, but the host is reachable; \
-                         the monitoring has stopped, not the machine",
+                        "{}からネットワーク経由で応答を得ていますが、Sentinel agentから正常な応答を得られていません。ホスト内の状態を取得できない可能性があります。",
                         host.canonical_name
                     ))
                     .recommending(vec![
-                        format!("systemctl status sentinel-agent  # on {}", host.canonical_name),
-                        format!("journalctl -u sentinel-agent -n 100  # on {}", host.canonical_name),
+                        guide::entity(host),
+                        guide::step(&host.canonical_name, "agentが起動しているか、終了コードや起動失敗を確認してください", "sudo systemctl status sentinel-agent --no-pager -l"),
+                        guide::step(&host.canonical_name, "直近のログで設定の読み込み失敗、認証エラー、待受アドレスを確認してください", "sudo journalctl -u sentinel-agent -n 100 --no-pager"),
+                        guide::step(&host.canonical_name, "controllerに登録されたagentの接続先と実際の待受アドレス・ポートを比較してください", "sudo ss -lntp"),
                     ]),
             );
         }
@@ -123,9 +124,9 @@ impl DiagnosisRule for SshServiceFailure {
             };
 
             let detail = if agent_confirms {
-                "the Sentinel agent is answering, so the host is up"
+                "Sentinel agentからは正常な応答を得られています"
             } else {
-                "the host is reachable"
+                "ネットワーク経由でホストからの応答は確認できています"
             };
 
             diagnoses.push(
@@ -134,12 +135,15 @@ impl DiagnosisRule for SshServiceFailure {
                     .rooted_at([host.id])
                     .with_evidence(evidence_for(context, host.id))
                     .with_summary(format!(
-                        "SSH is not answering on {}; {detail}, so this is a lockout rather than an outage",
+                        "{}のSSH接続に失敗しています。{detail}。SSHサービスと接続経路を確認してください。",
                         host.canonical_name
                     ))
                     .recommending(vec![
-                        format!("systemctl status sshd  # on {}", host.canonical_name),
-                        format!("journalctl -u sshd -n 100  # on {}", host.canonical_name),
+                        guide::entity(host),
+                        format!("{}にSSHで入れない場合は、コンソールやBMCからログインしてください。以下のホスト上の確認は、その接続先で行ってください。", host.canonical_name),
+                        guide::step(&host.canonical_name, "SSHサービスの状態を確認してください。サービス名がsshの環境ではsshdをsshに置き換えてください", "sudo systemctl status sshd --no-pager -l"),
+                        guide::step(&host.canonical_name, "SSHの起動失敗や接続拒否の記録を確認してください", "sudo journalctl -u sshd -u ssh -n 100 --no-pager"),
+                        guide::step(&host.canonical_name, "実際のSSH待受ポートを確認し、controllerの接続先設定と比較してください", "sudo ss -lntp"),
                     ]),
             );
         }
@@ -212,9 +216,7 @@ mod tests {
         assert_eq!(diagnoses.len(), 1);
         assert!(diagnoses[0].is(kind::SENTINEL_AGENT_FAILURE));
         assert!(
-            diagnoses[0]
-                .summary
-                .contains("the monitoring has stopped, not the machine"),
+            diagnoses[0].summary.contains("ホスト内の状態を取得できない可能性"),
             "{}",
             diagnoses[0].summary
         );
@@ -282,7 +284,7 @@ mod tests {
             "the agent confirms the host is up"
         );
         assert!(
-            diagnoses[0].summary.contains("lockout rather than an outage"),
+            diagnoses[0].summary.contains("SSH接続に失敗"),
             "{}",
             diagnoses[0].summary
         );
