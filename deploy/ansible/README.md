@@ -352,11 +352,28 @@ sudo -u sentinel sentinel peers
 
 ## アップグレード
 
+中央ノードと下流ノードをまとめて更新する場合は、中央ノードで
+[`deploy/update.sh`](../update.sh)を実行してください。
+既存のインベントリとSSH設定を使い、中央ノードを先に更新します。
+
+```bash
+cd /path/to/cluster-sentinel
+git pull --ff-only
+./deploy/update.sh v1.0.6 -- -K
+```
+
+Vaultを使っている場合は`-- --ask-vault-pass -K`、
+SSHのパスワードも必要な場合は`-- -k -K`を付けます。
+インベントリを別の場所に置いている場合は、`--inventory /path/to/inventory.ini`で指定します。
+中央ノードの更新が済んでいる場合は、`--agents-only`で下流だけを更新できます。
+詳しい動作と手動での更新方法は[運用ガイド](../../docs/OPERATIONS.md#更新スクリプトを使う)を参照してください。
+
+Ansibleを直接実行する場合は、先に中央ノードを更新してから、
 `sentinel_version`を変えて再実行します。credentialはcontrollerのものを配布します。
 agentの設定ファイルはテンプレートから書き直すため、変更はAnsibleインベントリやgroup_varsに記載してください。
 
 ```bash
-ansible-playbook -i inventory.ini site.yml -e sentinel_version=v0.3.1
+ansible-playbook -i inventory.ini site.yml -K -e sentinel_version=v1.0.6
 ```
 
 controllerを先に更新してください。protocol versionが同じであれば

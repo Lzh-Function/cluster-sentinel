@@ -128,7 +128,7 @@ impl Notification {
                 crate::diagnosis::Confidence::Confirmed => "直接の証拠で確認済み",
             };
             body.push_str(&format!(
-                "{}\n診断の確度　{confidence}\n{}\n\n",
+                "{}\n診断の確度　{confidence}\n\n{}\n\n",
                 diagnosis.diagnosis_type.label(),
                 diagnosis.summary
             ));

@@ -1,73 +1,64 @@
 分散クラスタの監視・障害検知・原因診断システムです。
 controller・agent・CLIを一つのバイナリで実行できます。
 
-## v1.0.5の変更
+## v1.0.6の変更
 
-### 復旧を確認するまで障害を維持
+### Slack通知を一つの本文に整理
 
-ノード停止後、観測の期限切れだけで復旧通知が送られる問題を修正しました。原因と考えられる対象と、影響を受けた対象すべての復旧を、新しい正常な観測で確認します。観測が途絶えたり、状態がUNKNOWNになったりしただけでは解決しません。
+通知全文が通常の本文欄と色バー付きの本文欄に二重に表示される問題を修正しました。色バー付きの本文にまとめて表示します。赤のCRITICAL通知には、冒頭に`@channel`を付けます。
 
-状態はprobeと監視元ごとに判定します。別のprobeの正常結果、再送された観測、過去の観測では異常を解消しません。判定途中の回数も保存し、controllerの再起動後に引き継ぎます。
+確認コマンドはコードブロックで表示します。実行先、確認する内容、コマンドを改行し、手順の間に空行を入れました。診断の確度、診断文、障害IDなどの情報も段落を分けています。
 
-### 通知の再送と復旧状態の表示
+以前の診断に保存された`systemctl`や`journalctl`などのコマンドもコードで表示します。引用符、バッククォート、日本語を含むコマンドを、そのままコピーできます。長い通知でもコマンドを途中で切らず、表示上限を超えた場合は全文を確認するコマンドを表示します。
 
-通知候補を障害の記録と同時に保存します。送信に失敗した通知はcontrollerの再起動後も再送し、配信済みの通知は繰り返しません。障害が再発した場合は、前回の未配信の復旧通知を取り消します。
+### 中央ノードと下流ノードの更新をスクリプトで実行
 
-原因が復旧しても、影響を受けた対象の復旧を確認できていなければ「復旧途中」と表示します。汎用webhookの`resolved`が`true`になるのは、復旧完了時だけです。
+[`deploy/update.sh`](https://github.com/mizuno-group/cluster-sentinel/blob/v1.0.6/deploy/update.sh)を追加しました。中央ノードを更新し、サービスの起動と状態の読み取りを確認してから、Ansibleで下流ノードを更新します。バージョンを指定して繰り返し使えます。
 
-### 日本語の通知とSlackの確認手順
+中央ノードでは、取得したバイナリのSHA-256、バージョン、既存の設定を検証してから置き換えます。前のバイナリは`/usr/local/bin/sentinel.previous`に保存します。中央ノードでagentも起動中なら、そのサービスも再起動します。
 
-通知の見出し、異常の説明、確認手順を日本語にしました。各手順に、実行するホストと出力で確認する項目を記載しています。Sentinelの確認コマンドは、controllerで`sudo -u sentinel sentinel ...`として実行してください。
+中央ノードの設定・DB・認証情報を置き換える処理は行いません。下流ノードの設定と認証情報は、既存のAnsibleロールが通常どおり配布します。ノードの設定を変更するときは、インベントリやgroup_varsを編集してください。
 
-Slackでは、赤のCRITICAL通知の冒頭に`@channel`を付けます。復旧途中は黄、復旧完了は緑で表示し、復旧の通知にはメンションを付けません。長い手順はコマンドを途中で切らずに分割し、表示上限を超える場合は全文を確認するコマンドを表示します。
+## 更新方法
 
-```toml
-[[notification.webhooks]]
-name = "ops"
-url = "https://hooks.slack.com/services/..."
-format = "slack"
-```
-
-通知経路を確認するには、controllerで次のコマンドを実行してください。`--severity critical`を付けると、テスト通知にも`@channel`が付きます。
+中央ノードで、普段Ansibleを実行するユーザーから実行してください。スクリプト全体には`sudo`を付けません。
 
 ```bash
-sudo -u sentinel sentinel notify test --provider ops
+cd /path/to/cluster-sentinel
+git pull --ff-only
+./deploy/update.sh v1.0.6 -- -K
 ```
 
-Slurmの調査には登録されたNodeNameを使い、NFSの調査には観測したポートを使います。NFSのI/O検査が完了しない場合は、マウント情報、カーネルログ、待機中のプロセスの確認手順を表示します。
+下流ノードでsudoを使う指定は、playbookの`become: true`に含まれています。`-K`でsudoのパスワードを入力します。
 
-導入・運用ガイド、設計書、設定例も、検査条件と操作手順が分かる文章に書き直しました。
+Vaultを使っている場合は、次のように実行します。
 
-## ダウンロード
+```bash
+./deploy/update.sh v1.0.6 -- --ask-vault-pass -K
+```
+
+SSHのパスワードも必要な場合は、`-- -k -K`を付けます。別のインベントリは`--inventory /path/to/inventory.ini`で指定できます。
+
+中央と下流を別々に更新する場合は、次のように実行します。
+
+```bash
+./deploy/update.sh v1.0.6 --parent-only
+./deploy/update.sh v1.0.6 --agents-only -- -K
+```
+
+スクリプトは中央ノードの`/usr/local/bin/sentinel`と`/etc/sentinel/config.toml`を使います。配置を変えている場合は、[運用ガイド](https://github.com/mizuno-group/cluster-sentinel/blob/v1.0.6/docs/OPERATIONS.md#アップグレード)の手動手順を参照してください。
+
+## 配布ファイル
 
 | ファイル | 対象 |
 | --- | --- |
 | `sentinel-x86_64-unknown-linux-musl` | x86_64 |
 | `sentinel-aarch64-unknown-linux-musl` | ARM64 |
 
-各バイナリにSHA-256の確認用ファイルを添付します。静的リンクでビルドするため、ホストのglibcのバージョンに依存しません。同じアーキテクチャのcontrollerとagentに、同じバイナリを配れます。
+各バイナリにSHA-256の確認用ファイルを添付します。静的リンクでビルドするため、ホストのglibcのバージョンに依存しません。
 
-以下はx86_64の例です。ARM64ではファイル名を対応するものに置き換えてください。
-
-```bash
-sha256sum -c sentinel-x86_64-unknown-linux-musl.sha256
-sudo install -m 0755 sentinel-x86_64-unknown-linux-musl /usr/local/bin/sentinel
-sudo -u sentinel sentinel version
-```
-
-## 更新
-
-controllerとagentをv1.0.5に更新してください。更新前に設定を確認し、controller、agentの順に再起動します。既存のdatabaseには起動時にマイグレーションを適用します。
+Slackの表示を確認するには、中央ノードで次のコマンドを実行してください。`--severity critical`を付けると、テスト通知にも`@channel`が付きます。
 
 ```bash
-sudo -u sentinel sentinel --config /etc/sentinel/config.toml config check
-sudo systemctl restart sentinel-controller
-# 各agentホストで実行
-sudo systemctl restart sentinel-agent
+sudo -u sentinel sentinel notify test --provider ops
 ```
-
-Ansibleロールの既定の取得バージョンもv1.0.5です。詳しい手順は[運用ガイド](https://github.com/mizuno-group/cluster-sentinel/blob/v1.0.5/docs/OPERATIONS.md)を参照してください。
-
-## 実環境での確認
-
-実際のSlack宛への配信、BMCによる電源状態の確認、NFSの応答待ちが続く実機、実GPUでの動作は、利用環境で確認してください。自動復旧やリモートでの任意コマンド実行は行いません。

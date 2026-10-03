@@ -31,6 +31,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all
 ```
 
+更新スクリプトを変更した場合は、次の検査も実行してください。CIでも実行します。
+このテストは一時ディレクトリと模擬コマンドを使うため、稼働中のノードを変更しません。
+Python 3.9以降が必要です。
+
+```bash
+bash -n deploy/update.sh
+python3 tests/test_update_script.py
+```
+
 ## テスト階層
 
 | Level | 対象 | 必要なもの |

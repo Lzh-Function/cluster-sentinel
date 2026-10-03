@@ -328,6 +328,10 @@ Slackへ`--severity critical`でテスト通知を送ると、赤の表示と冒
 
 ### Slackの通知を受けたら
 
+通知は色バー付きの本文にまとめて表示します。確認手順は、実行先、確認する内容、コマンドを改行して表示します。
+診断の説明と障害IDなどの情報は段落を分けています。確認コマンドはコードブロックからコピーできます。
+赤のCRITICAL通知には、冒頭に`@channel`が付きます。
+
 通知の冒頭で、障害発生・診断更新・復旧途中・復旧確認のどれかを確認してください。復旧途中は、影響を受けた対象すべての復旧をまだ確認できていない状態です。
 
 確認手順の最初にあるコマンドをSentinel controllerで実行し、原因の候補、影響を受けた対象、観測時刻を確認してください。その後は、手順に書かれたホストで、サービスやログを調べてください。通知には状態や設定を変更するコマンドを載せていません。
@@ -621,6 +625,60 @@ controllerを先に、agentを後に。バイナリversionとprotocol versionは
 はそのまま残ります。databaseのマイグレーションはcontrollerの起動時に自動で
 適用されます。
 
+### 更新スクリプトを使う
+
+中央ノードで、普段Ansibleを実行するユーザーから
+[`deploy/update.sh`](../deploy/update.sh)を実行してください。
+中央ノードを更新し、サービスの起動と状態の読み取りを確認してから、
+既存のAnsibleインベントリにある下流ノードを更新します。
+
+```bash
+cd /path/to/cluster-sentinel
+git pull --ff-only
+./deploy/update.sh v1.0.6 -- -K
+```
+
+次のリリースへ更新するときは、`v1.0.6`を更新先のバージョンに変えます。
+スクリプトはリポジトリを自動では更新しません。
+バイナリの取得元は`mizuno-group/cluster-sentinel`です。
+中央ノードでは`/usr/local/bin/sentinel`と`/etc/sentinel/config.toml`を使います。
+配置を変えている場合は、後述の手動手順を使ってください。
+
+Vaultを使っている場合やSSHのパスワードが必要な場合は、
+`--`の後に普段のAnsibleオプションを付けます。
+スクリプト全体には`sudo`を付けないでください。SSH接続には実行したユーザーの設定を使います。
+
+```bash
+./deploy/update.sh v1.0.6 -- --ask-vault-pass -K
+./deploy/update.sh v1.0.6 -- -k -K
+```
+
+中央と下流を別々に更新することもできます。
+`--agents-only`は、中央ノードに指定したバージョンが入っており、
+サービスが起動していることを確認してから実行します。
+
+```bash
+./deploy/update.sh v1.0.6 --parent-only
+./deploy/update.sh v1.0.6 --agents-only -- -K
+./deploy/update.sh v1.0.6 --inventory /path/to/inventory.ini -- -K --limit node01
+```
+
+中央ノードでは、ダウンロードしたファイルのSHA-256、バージョン、
+既存の設定を検証してからバイナリを置き換えます。
+前のバイナリは`/usr/local/bin/sentinel.previous`に保存します。
+設定・DB・認証情報を置き換える処理は行いません。
+中央ノードで`sentinel-agent`も起動中なら、そのサービスも再起動します。
+同じバイナリが入っている場合も、途中で中断した更新をやり直せるようにサービスを再起動します。
+
+下流ノードの設定と認証情報は、既存のAnsibleロールが通常どおり配布します。
+ノードの設定を変更するときは、Ansibleインベントリやgroup_varsを編集してください。
+中央ノードの確認に失敗した場合は、下流の更新を開始しません。
+下流の更新中に失敗した場合は、原因を直して`--agents-only`でやり直せます。
+
+`sentinel status`の終了コード2は、監視対象の異常を示します。
+スクリプトはその内容を表示して更新を続けます。
+状態を読み取れない場合は、更新を中止します。
+
 ### 1. controller
 
 ```bash
@@ -630,23 +688,23 @@ curl -fsSL "https://github.com/mizuno-group/cluster-sentinel/releases/latest/dow
 ```
 
 置き換える前に、今の設定が新しいバイナリで通ることを確認します。
-バイナリを置き換える前に、新版で設定を読み込めるか確認します。
 
 ```bash
 chmod +x sentinel-*-unknown-linux-musl && sudo -u sentinel ./sentinel-*-unknown-linux-musl --config /etc/sentinel/config.toml config check
 ```
 
 ```bash
-sudo mv sentinel-*-unknown-linux-musl /usr/local/bin/sentinel && sudo systemctl restart sentinel-controller
+sudo install -o root -g root -m 0755 sentinel-*-unknown-linux-musl /usr/local/bin/sentinel.new
+sudo mv -fT /usr/local/bin/sentinel.new /usr/local/bin/sentinel
+sudo systemctl restart sentinel-controller
 ```
 
-> `cp`や`install`ではなく`mv`を使ってください。
-> どちらも既存ファイルをtruncateしようとするため、
-> 実行中のバイナリに対しては`Text file busy`で失敗します。
-> `mv`はrenameなので、動いているプロセスは古い実体を使い続けるため、処理を継続できます。
+`install`は別名のファイルへ書き込みます。
+その後、同じディレクトリ内で`mv`してバイナリを置き換えます。
+実行中のファイルに直接書き込むと、`Text file busy`で失敗します。
 
 ```bash
-sentinel version && systemctl status sentinel-controller --no-pager
+sudo -u sentinel sentinel version && systemctl status sentinel-controller --no-pager
 ```
 
 controllerとagentが同居しているホスト（[DEPLOYMENT.md §9.10](DEPLOYMENT.md#910-controllerにagentを同居させる)）
@@ -706,9 +764,14 @@ credentialは`--force`でも上書きされません。入れ替えると、既�
 新しいバージョンのマイグレーションを適用したDBも、古いバイナリで読み取れます。
 
 ```bash
-sudo install -m 0755 /path/to/previous/sentinel /usr/local/bin/sentinel
+sudo install -o root -g root -m 0755 /path/to/previous/sentinel /usr/local/bin/sentinel.new
+sudo mv -fT /usr/local/bin/sentinel.new /usr/local/bin/sentinel
 sudo systemctl restart sentinel-controller
 ```
+
+更新スクリプトで保存したバイナリを使う場合は、
+`/path/to/previous/sentinel`を`/usr/local/bin/sentinel.previous`に置き換えます。
+中央ノードでagentも動かしている場合は、`sentinel-agent`も再起動してください。
 
 ## v1で行わないこと
 

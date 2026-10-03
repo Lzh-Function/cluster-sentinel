@@ -35,6 +35,11 @@ jobs:
       - name: Tests
         run: cargo test --all
 
+      - name: Update script tests
+        run: |
+          bash -n deploy/update.sh
+          python3 tests/test_update_script.py
+
       - name: Release build
         run: cargo build --release
 
