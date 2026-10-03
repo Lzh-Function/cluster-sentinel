@@ -187,6 +187,88 @@ async fn a_new_healthy_quorum_can_replace_reassigned_observers() {
     assert_eq!(update.resolved.len(), 1);
 }
 
+fn service_view(probe: &str, observer: &str, status: ProbeStatus, age: i64) -> Observation {
+    let at = sentinel::time::now() - chrono::Duration::seconds(age);
+    Observation::new(ProbeId::new(probe), host("target"), status)
+        .with_observer(host(observer))
+        .with_times(at, at)
+}
+
+async fn report_service(c: &mut Controller, probe: &str, observer: &str, status: ProbeStatus, age: i64, rounds: usize) {
+    for _ in 0..rounds {
+        c.ingest_observations(&[service_view(probe, observer, status, age)])
+            .await
+            .unwrap();
+    }
+}
+
+async fn service_failure_with_old_healthy_ssh(recover_agent: bool) -> Controller {
+    let mut c = controller().await;
+    for probe in ["ssh.service", "sentinel.agent"] {
+        c.config_mut().probes.0.insert(
+            probe.into(),
+            ProbeSchedule {
+                interval: Some(Duration::from_secs(300)),
+                ..Default::default()
+            },
+        );
+    }
+    report(&mut c, true, 0).await;
+    report_service(&mut c, "ssh.service", "c", ProbeStatus::Ok, 300, 3).await;
+    report_service(&mut c, "sentinel.agent", "a", ProbeStatus::Failed, 300, 3).await;
+    let (diagnoses, update) = c.diagnose_and_correlate().await.unwrap();
+    assert!(diagnoses.iter().any(|d| d.is(kind::SENTINEL_AGENT_FAILURE)));
+    assert_eq!(update.opened.len(), 1);
+    c.config_mut().probes.0.get_mut("ssh.service").unwrap().interval = Some(Duration::from_secs(5));
+    c.config_mut().probes.0.get_mut("sentinel.agent").unwrap().interval = Some(Duration::from_secs(5));
+    if recover_agent {
+        report_service(&mut c, "sentinel.agent", "a", ProbeStatus::Ok, 0, 2).await;
+    }
+    c
+}
+
+#[tokio::test]
+async fn fresh_healthy_evidence_replaces_an_old_healthy_observer_after_restart() {
+    let c = service_failure_with_old_healthy_ssh(true).await;
+    let mut restarted = Controller::new(c.config().clone(), c.store().clone()).await.unwrap();
+    report_service(&mut restarted, "ssh.service", "b", ProbeStatus::Ok, 0, 2).await;
+    let (diagnoses, update) = restarted.diagnose_and_correlate().await.unwrap();
+    assert!(diagnoses.is_empty(), "{diagnoses:?}");
+    assert_eq!(update.resolved.len(), 1);
+}
+
+#[tokio::test]
+async fn an_old_healthy_view_expiring_without_a_replacement_does_not_resolve() {
+    let mut c = service_failure_with_old_healthy_ssh(true).await;
+    let (diagnoses, update) = c.diagnose_and_correlate().await.unwrap();
+    assert!(diagnoses.is_empty(), "{diagnoses:?}");
+    assert!(update.resolved.is_empty());
+    assert_eq!(c.incident_engine().active().count(), 1);
+}
+
+#[tokio::test]
+async fn a_replacement_for_healthy_evidence_still_needs_two_good_rounds() {
+    let mut c = service_failure_with_old_healthy_ssh(true).await;
+    report_service(&mut c, "ssh.service", "b", ProbeStatus::Ok, 0, 1).await;
+    let (_, update) = c.diagnose_and_correlate().await.unwrap();
+    assert!(update.resolved.is_empty());
+    report_service(&mut c, "ssh.service", "b", ProbeStatus::Ok, 0, 1).await;
+    let (_, update) = c.diagnose_and_correlate().await.unwrap();
+    assert_eq!(update.resolved.len(), 1);
+}
+
+#[tokio::test]
+async fn a_healthy_replacement_cannot_clear_a_failed_observers_service_path() {
+    let mut c = service_failure_with_old_healthy_ssh(false).await;
+    report_service(&mut c, "ssh.service", "b", ProbeStatus::Ok, 0, 2).await;
+    let mut restarted = Controller::new(c.config().clone(), c.store().clone()).await.unwrap();
+    report_service(&mut restarted, "sentinel.agent", "b", ProbeStatus::Ok, 0, 2).await;
+    let (diagnoses, update) = restarted.diagnose_and_correlate().await.unwrap();
+    assert!(diagnoses.is_empty(), "{diagnoses:?}");
+    assert!(update.resolved.is_empty());
+    assert_eq!(restarted.incident_engine().active().count(), 1);
+}
+
 #[tokio::test]
 async fn a_failed_resolution_delivery_is_retried_after_a_controller_restart() {
     let mut c = controller().await;

@@ -278,7 +278,12 @@ impl Controller {
                                 });
                         }
                         latest.all(old.target_entity, old.probe_id.as_str()).iter().any(|new| {
-                            new.observer_entity == old.observer_entity
+                            // Healthy context is not a failed path: a current
+                            // observer can confirm it after reassignment. Bad
+                            // and degraded evidence still requires recovery
+                            // from the observer that reported the fault.
+                            (new.observer_entity == old.observer_entity
+                                || old.status == crate::observation::ProbeStatus::Ok)
                                 && self.engine().confirms_health(new)
                                 && new.status == crate::observation::ProbeStatus::Ok
                                 && (new.finished_at > old.finished_at
