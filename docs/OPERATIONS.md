@@ -501,6 +501,92 @@ sudo chown sentinel:sentinel /etc/sentinel/*.toml && sudo systemctl restart sent
 設定するようになっています。古いバージョンで作られたファイルだけ
 手当てが必要です。）
 
+### 更新時に監視状態を初期化する
+
+`deploy/update.sh`は、controllerを停止して現在の監視状態を初期化してから起動し直します。
+未解決の障害もすべて「初期化で終了」に変更し、現在の障害一覧から外します。
+確認済み・復旧途中・通知を抑止中の障害も対象です。
+送信待ちの通知は破棄します。初期化による復旧通知は送りません。
+初期化した時刻より前の観測は、更新後の状態判定に使いません。
+遅れて届いた古い観測も判定から外すため、以前の状態が戻ることはありません。
+観測履歴、設定、監視対象の登録情報は残します。
+終了した障害の履歴には、初期化で終了したことを記録します。
+更新後も異常が続いていれば、新しい観測から新たな障害として検出します。
+
+初期化後は、新しい検査結果がそろうまでUNKNOWNになります。
+通常のサービス再起動では初期化せず、監視状態を引き継ぎます。
+
+手動で初期化する場合は、中央ノードでcontrollerを停止してから実行してください。
+
+```bash
+sudo systemctl stop sentinel-controller
+sudo -u sentinel sentinel state reset
+sudo systemctl start sentinel-controller
+```
+
+初期化に失敗した場合は、原因を直してからcontrollerを起動してください。
+
+### NVIDIA GPUの監視をやめたノードがUNKNOWNになる
+
+`nvidia-smi`がないノードでは、agentはNVIDIA GPUを監視しません。
+以前にGPUを監視していた場合も、古いGPU観測はノードの状態判定から外します。
+観測履歴は削除せず、そのまま残します。
+
+コマンドを削除した後は、該当ノードでagentを再起動してください。
+再登録時に、controllerもGPUを監視対象から外します。
+
+```bash
+sudo systemctl restart sentinel-agent
+```
+
+起動後の検査でコマンドが見つからなくなった場合も、GPU監視を停止します。
+コマンドがあるのにドライバのエラーやタイムアウトが発生した場合は、検査失敗として扱います。
+`nvidia-smi`を再び使えるようにした後は、agentを再起動するとGPU監視を再開します。
+
+### CPU・メモリの観測が正常でもhostがUNKNOWNになる
+
+`host.metrics`が正常でも、システムログを検査できないと`host`はUNKNOWNになります。
+中央ノードで次を実行し、ログの検査結果を確認してください。
+
+```bash
+sudo -u sentinel sentinel entity observations host/ノード名 --probe journal.events --limit 1 --json
+```
+
+`journal_unavailable`と`insufficient permissions`が記録されている場合は、
+該当ノードでログの閲覧権限を追加し、agentを再起動します。
+
+```bash
+sudo usermod -aG systemd-journal sentinel
+sudo systemctl restart sentinel-agent
+sudo -u sentinel journalctl -k -n 5 --no-pager
+```
+
+agentの新しいプロセスにグループ設定を反映するため、再起動が必要です。
+ログを読めるようになっても、ほかの項目がUNKNOWNならノード全体のUNKNOWNは残ります。
+
+### 多くのノードがUNKNOWNになり、controllerの応答も遅い
+
+controllerが観測を受け取るまでに時間がかかると、以前の観測の有効期限が切れます。
+その場合、ノードやagentが動いていてもUNKNOWNになることがあります。
+中央ノードでcontrollerのログを確認してください。
+
+```bash
+sudo journalctl -u sentinel-controller -n 60 --no-pager
+```
+
+`slow statement`が繰り返し出ている場合は、DB処理に時間がかかっています。
+特に`ROW_NUMBER()`を含む観測取得のSQLが続く場合は、最新の観測を取り出すために
+履歴全体を並べ替える処理が、controllerの応答を遅らせている可能性があります。
+
+```bash
+sudo -u sentinel sentinel entity observations host/ノード名 --probe sentinel.agent --limit 3 --json
+```
+
+`spooled_observations`は、agentがcontrollerへ送信できずに保存している観測の件数です。
+件数が増え続けている場合は、受信や送信が追いついていません。
+観測が`ok`でも、そのノードのほかの検査結果がcontrollerに届いているとは限りません。
+調査時は、観測の日時、送信待ちの件数、controllerのログを併せて確認してください。
+
 ### 通知が来ない
 
 まずmaintenance windowを疑ってください。`sentinel status`の末尾に
@@ -635,10 +721,12 @@ controllerを先に、agentを後に。バイナリversionとprotocol versionは
 ```bash
 cd /path/to/cluster-sentinel
 git pull --ff-only
-./deploy/update.sh v1.0.6 -- -K
+read -r -p '更新先のバージョン: ' VERSION
+./deploy/update.sh "$VERSION" -- -K
 ```
 
-次のリリースへ更新するときは、`v1.0.6`を更新先のバージョンに変えます。
+VERSIONには、`state reset`に対応した更新先の公開済みバージョンを指定します。
+v1.0.6以前のバイナリはこの初期化に対応していません。
 スクリプトはリポジトリを自動では更新しません。
 バイナリの取得元は`mizuno-group/cluster-sentinel`です。
 中央ノードでは`/usr/local/bin/sentinel`と`/etc/sentinel/config.toml`を使います。
@@ -649,8 +737,8 @@ Vaultを使っている場合やSSHのパスワードが必要な場合は、
 スクリプト全体には`sudo`を付けないでください。SSH接続には実行したユーザーの設定を使います。
 
 ```bash
-./deploy/update.sh v1.0.6 -- --ask-vault-pass -K
-./deploy/update.sh v1.0.6 -- -k -K
+./deploy/update.sh "$VERSION" -- --ask-vault-pass -K
+./deploy/update.sh "$VERSION" -- -k -K
 ```
 
 中央と下流を別々に更新することもできます。
@@ -658,17 +746,22 @@ Vaultを使っている場合やSSHのパスワードが必要な場合は、
 サービスが起動していることを確認してから実行します。
 
 ```bash
-./deploy/update.sh v1.0.6 --parent-only
-./deploy/update.sh v1.0.6 --agents-only -- -K
-./deploy/update.sh v1.0.6 --inventory /path/to/inventory.ini -- -K --limit node01
+./deploy/update.sh "$VERSION" --parent-only
+./deploy/update.sh "$VERSION" --agents-only -- -K
+./deploy/update.sh "$VERSION" --inventory /path/to/inventory.ini -- -K --limit node01
 ```
 
 中央ノードでは、ダウンロードしたファイルのSHA-256、バージョン、
 既存の設定を検証してからバイナリを置き換えます。
 前のバイナリは`/usr/local/bin/sentinel.previous`に保存します。
 設定・DB・認証情報を置き換える処理は行いません。
+起動前に現在の監視状態と未解決の障害をすべて初期化し、新しい観測から判定し直します。
+DB内の観測履歴は残します。
 中央ノードで`sentinel-agent`も起動中なら、そのサービスも再起動します。
+`systemd-journal`グループがある環境では、サービスの再起動前に`sentinel`ユーザーへログの閲覧権限を追加します。
 同じバイナリが入っている場合も、途中で中断した更新をやり直せるようにサービスを再起動します。
+`--agents-only`で実行した場合も、中央ノードの状態を初期化するためcontrollerを再起動します。
+更新先のバイナリが`state reset`に対応していない場合は、置き換えを始める前に更新を中止します。
 
 下流ノードの設定と認証情報は、既存のAnsibleロールが通常どおり配布します。
 ノードの設定を変更するときは、Ansibleインベントリやgroup_varsを編集してください。

@@ -9,10 +9,12 @@ mod incidents;
 mod maintenance;
 mod notifications;
 mod observations;
+mod reset;
 mod retention;
 mod sqlite;
 
 pub use observations::IngestOutcome;
+pub use reset::StateReset;
 pub use retention::{PruneMode, PruneOutcome, MIN_KEEP_PER_ENTITY};
 pub(crate) use sqlite::open_sqlite_pool;
 pub use sqlite::SqliteStore;

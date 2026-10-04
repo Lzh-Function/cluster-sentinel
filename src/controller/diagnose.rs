@@ -101,7 +101,14 @@ impl Controller {
 
         let mut observations = ObservationIndex::new();
         for entity in inventory.entities() {
-            for observation in self.store().latest_observations(entity.id).await? {
+            for observation in self
+                .store()
+                .latest_observations_since(entity.id, current_engine.observation_cutoff())
+                .await?
+            {
+                if !current_engine.probe_enabled(entity.id, &observation.probe_id) {
+                    continue;
+                }
                 let horizon = horizon_for(
                     observation.probe_id.as_str(),
                     observation.observer_entity,
@@ -198,7 +205,14 @@ impl Controller {
         let at = crate::time::now();
         let mut latest = ObservationIndex::new();
         for entity in inventory.entities() {
-            for o in self.store().latest_observations(entity.id).await? {
+            for o in self
+                .store()
+                .latest_observations_since(entity.id, self.engine().observation_cutoff())
+                .await?
+            {
+                if !self.engine().probe_enabled(entity.id, &o.probe_id) {
+                    continue;
+                }
                 if at - o.finished_at
                     <= horizon_for(o.probe_id.as_str(), o.observer_entity, observer, &horizons, fallback)
                 {

@@ -5,8 +5,8 @@
 //! for the same reason `scontrol` is preferred to `libslurm` (SPEC.md §64).
 //!
 //! The important restraint is about absence. A host with no GPUs is not a
-//! broken host, and `nvidia-smi` missing is not a fault unless something
-//! expected GPUs to be there. Only a *disagreement* between what is expected
+//! broken host, and a missing `nvidia-smi` disables NVIDIA monitoring. Only a
+//! *disagreement* between what is expected
 //! and what is present is worth reporting, and saying which is which is the
 //! diagnosis engine's job, not this probe's.
 
@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::capability::well_known;
-use crate::command::{Allowlist, CommandRunner};
+use crate::command::{Allowlist, CommandError, CommandRunner};
 use crate::entity::EntityType;
 use crate::observation::{Observation, ProbeStatus};
 use crate::probes::{Probe, ProbeContext, ProbeDefinition};
@@ -131,6 +131,21 @@ pub struct NvidiaGpuProbe {
     definition: ProbeDefinition,
     allowlist: Allowlist,
     thresholds: GpuThresholds,
+    program: String,
+}
+
+enum QueryError {
+    Missing(CommandError),
+    Unavailable(String),
+}
+
+impl QueryError {
+    fn detail(self) -> String {
+        match self {
+            Self::Missing(error) => error.to_string(),
+            Self::Unavailable(detail) => detail,
+        }
+    }
 }
 
 impl Default for NvidiaGpuProbe {
@@ -150,6 +165,7 @@ impl NvidiaGpuProbe {
                 .within(Duration::from_secs(10)),
             allowlist: Allowlist::builtin(),
             thresholds: GpuThresholds::default(),
+            program: "nvidia-smi".into(),
         }
     }
 
@@ -161,7 +177,11 @@ impl NvidiaGpuProbe {
 
     /// Run `nvidia-smi` and parse its output.
     pub async fn query(&self) -> Result<Vec<Gpu>, String> {
-        let output = CommandRunner::new("nvidia-smi")
+        self.query_result().await.map_err(QueryError::detail)
+    }
+
+    async fn query_result(&self) -> Result<Vec<Gpu>, QueryError> {
+        let output = CommandRunner::new(&self.program)
             .args([
                 &format!("--query-gpu={}", QUERY_FIELDS.join(",")),
                 "--format=csv,noheader,nounits",
@@ -172,10 +192,18 @@ impl NvidiaGpuProbe {
             .output_limit(256 * 1024)
             .run(&self.allowlist)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| match &error {
+                CommandError::Spawn { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
+                    QueryError::Missing(error)
+                }
+                _ => QueryError::Unavailable(error.to_string()),
+            })?;
 
         if !output.is_success() {
-            return Err(format!("nvidia-smi failed: {}", output.stderr.trim()));
+            return Err(QueryError::Unavailable(format!(
+                "nvidia-smi failed: {}",
+                output.stderr.trim()
+            )));
         }
         Ok(parse_query(&output.stdout))
     }
@@ -192,14 +220,19 @@ impl Probe for NvidiaGpuProbe {
         // Supplied as a parameter so this probe never has to know about Slurm.
         let expected = context.parameter_u64("expected_gpu_count");
 
-        let gpus = match self.query().await {
+        let gpus = match self.query_result().await {
             Ok(gpus) => gpus,
-            Err(detail) => {
-                // No `nvidia-smi` and nothing expecting GPUs is an ordinary
-                // host, not a fault.
-                let status = match expected {
-                    Some(count) if count > 0 => ProbeStatus::Failed,
-                    _ => ProbeStatus::Unsupported,
+            Err(error) => {
+                let (status, code) = match &error {
+                    QueryError::Missing(_) => (ProbeStatus::NotApplicable, "nvidia_smi_missing"),
+                    QueryError::Unavailable(_) => (
+                        if expected.is_some_and(|count| count > 0) {
+                            ProbeStatus::Failed
+                        } else {
+                            ProbeStatus::Unsupported
+                        },
+                        "nvidia_smi_unavailable",
+                    ),
                 };
                 // No `gpu_count` here, deliberately. A query that failed did
                 // not count zero GPUs, it counted nothing, and writing 0 turns
@@ -210,7 +243,7 @@ impl Probe for NvidiaGpuProbe {
                     .with_payload(serde_json::json!({
                         "expected_gpu_count": expected,
                     }))
-                    .with_error("nvidia_smi_unavailable", detail);
+                    .with_error(code, error.detail());
             }
         };
 
@@ -271,6 +304,15 @@ mod tests {
         )
         .with_parameters(parameters)
         .with_timeout(Duration::from_millis(500))
+    }
+
+    fn missing_command_probe() -> (tempfile::TempDir, NvidiaGpuProbe) {
+        let directory = tempfile::tempdir().expect("directory");
+        let probe = NvidiaGpuProbe {
+            program: directory.path().join("nvidia-smi").to_string_lossy().into_owned(),
+            ..NvidiaGpuProbe::new()
+        };
+        (directory, probe)
     }
 
     const TWO_GPUS: &str = "\
@@ -339,32 +381,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_host_without_nvidia_smi_and_without_expectations_is_unsupported() {
+    async fn a_host_without_nvidia_smi_and_without_expectations_is_not_applicable() {
         // The overwhelmingly common case: an ordinary host with no GPUs.
         // Reporting a fault here would mean a permanent false alarm on every
         // non-GPU machine in the cluster.
-        let observation = NvidiaGpuProbe::new().collect(&context(serde_json::Value::Null)).await;
+        let (_directory, probe) = missing_command_probe();
+        let observation = probe.collect(&context(serde_json::Value::Null)).await;
 
-        assert_eq!(observation.status, ProbeStatus::Unsupported);
+        assert_eq!(observation.status, ProbeStatus::NotApplicable);
         assert!(!observation.status.is_bad());
     }
 
     #[tokio::test]
-    async fn a_host_that_should_have_gpus_but_has_no_driver_is_a_failure() {
-        // Something expected GPUs here and there is no way to see them. That
-        // is worth reporting.
-        let observation = NvidiaGpuProbe::new()
+    async fn a_missing_command_disables_monitoring_even_when_gpus_are_expected() {
+        let (_directory, probe) = missing_command_probe();
+        let observation = probe
             .collect(&context(serde_json::json!({"expected_gpu_count": 4})))
             .await;
 
-        assert_eq!(observation.status, ProbeStatus::Failed);
+        assert_eq!(observation.status, ProbeStatus::NotApplicable);
         assert_eq!(observation.payload["expected_gpu_count"], 4);
         assert!(
             observation.payload.get("gpu_count").is_none_or(|v| v.is_null()),
             "a failed query counted nothing, not zero: {}",
             observation.payload
         );
-        assert_eq!(observation.error_code.as_deref(), Some("nvidia_smi_unavailable"));
+        assert_eq!(observation.error_code.as_deref(), Some("nvidia_smi_missing"));
     }
 
     #[tokio::test]
@@ -375,7 +417,8 @@ mod tests {
         // scheduler-comparison rule believed it, and the node appeared to lose
         // and regain its cards. Absence of evidence is not evidence of
         // absence, and here the difference is a pager.
-        let observation = NvidiaGpuProbe::new()
+        let (_directory, probe) = missing_command_probe();
+        let observation = probe
             .collect(&context(serde_json::json!({"expected_gpu_count": 1})))
             .await;
 
@@ -388,10 +431,36 @@ mod tests {
 
     #[tokio::test]
     async fn expecting_zero_gpus_is_not_an_expectation_of_gpus() {
-        let observation = NvidiaGpuProbe::new()
+        let (_directory, probe) = missing_command_probe();
+        let observation = probe
             .collect(&context(serde_json::json!({"expected_gpu_count": 0})))
             .await;
-        assert_eq!(observation.status, ProbeStatus::Unsupported);
+        assert_eq!(observation.status, ProbeStatus::NotApplicable);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_driver_error_from_an_existing_command_does_not_disable_monitoring() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("nvidia-smi");
+        std::fs::write(&path, "#!/bin/sh\nprintf 'driver unavailable\\n' >&2\nexit 1\n").expect("command");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("permissions");
+        let probe = NvidiaGpuProbe {
+            program: path.to_string_lossy().into_owned(),
+            ..NvidiaGpuProbe::new()
+        };
+        for (expected, status) in [
+            (serde_json::Value::Null, ProbeStatus::Unsupported),
+            (serde_json::json!(4), ProbeStatus::Failed),
+        ] {
+            let observation = probe
+                .collect(&context(serde_json::json!({"expected_gpu_count": expected})))
+                .await;
+            assert_eq!(observation.status, status);
+            assert_eq!(observation.error_code.as_deref(), Some("nvidia_smi_unavailable"));
+            assert!(observation.payload.get("gpu_count").is_none());
+        }
     }
 
     #[test]

@@ -359,7 +359,7 @@ sudo -u sentinel sentinel peers
 ```bash
 cd /path/to/cluster-sentinel
 git pull --ff-only
-./deploy/update.sh v1.0.6 -- -K
+./deploy/update.sh v1.0.7 -- -K
 ```
 
 Vaultを使っている場合は`-- --ask-vault-pass -K`、
@@ -373,7 +373,7 @@ Ansibleを直接実行する場合は、先に中央ノードを更新してか�
 agentの設定ファイルはテンプレートから書き直すため、変更はAnsibleインベントリやgroup_varsに記載してください。
 
 ```bash
-ansible-playbook -i inventory.ini site.yml -K -e sentinel_version=v1.0.6
+ansible-playbook -i inventory.ini site.yml -K -e sentinel_version=v1.0.7
 ```
 
 controllerを先に更新してください。protocol versionが同じであれば

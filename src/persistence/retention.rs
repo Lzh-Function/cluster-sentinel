@@ -142,7 +142,7 @@ impl SqliteStore {
     }
 }
 
-/// Delete resolved incidents that ended before the cutoff.
+/// Delete resolved or reset incidents that ended before the cutoff.
 async fn prune_incidents(
     conn: &mut SqliteConnection,
     period: RetentionPeriod,
@@ -151,12 +151,12 @@ async fn prune_incidents(
     let Some(cutoff) = period.cutoff(now) else {
         return Ok(0);
     };
-    // `status = 'resolved'` and a non-null `ended_at` are both required:
+    // A closed status and a non-null `ended_at` are both required:
     // an incident with no end has not ended, whatever its status column
     // says, and deleting it would lose an ongoing fault.
     let result = sqlx::query(
         "DELETE FROM incidents
-             WHERE status = 'resolved' AND ended_at IS NOT NULL AND ended_at < ?",
+             WHERE status IN ('resolved', 'reset') AND ended_at IS NOT NULL AND ended_at < ?",
     )
     .bind(to_rfc3339(cutoff))
     .execute(&mut *conn)

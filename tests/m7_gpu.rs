@@ -106,12 +106,12 @@ async fn a_host_with_no_gpus_and_no_expectation_is_not_a_fault() {
         .collect(&ProbeContext::local(host_id("node-a"), CapabilitySet::new()))
         .await;
 
-    assert_eq!(observation.status, ProbeStatus::Unsupported);
+    assert_eq!(observation.status, ProbeStatus::NotApplicable);
     assert!(!observation.status.is_bad());
 }
 
 #[tokio::test]
-async fn a_host_that_should_have_gpus_but_shows_none_is_a_failure() {
+async fn a_missing_nvidia_command_disables_monitoring_despite_a_gpu_expectation() {
     let observation = NvidiaGpuProbe::new()
         .collect(
             &ProbeContext::local(host_id("node-a"), CapabilitySet::new())
@@ -119,7 +119,7 @@ async fn a_host_that_should_have_gpus_but_shows_none_is_a_failure() {
         )
         .await;
 
-    assert_eq!(observation.status, ProbeStatus::Failed);
+    assert_eq!(observation.status, ProbeStatus::NotApplicable);
     assert_eq!(observation.payload["expected_gpu_count"], 8);
 }
 

@@ -12,6 +12,28 @@ pub(super) async fn open_store(config: &Config) -> anyhow::Result<SqliteStore> {
     Ok(SqliteStore::open(&config.database.path).await?)
 }
 
+pub async fn reset_state(cli: &Cli, json: bool) -> anyhow::Result<i32> {
+    let config = Config::load(&cli.config)?;
+    let store = open_store(&config).await?;
+    let result = store.reset_state(&config.environment).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("{}件の対象の監視状態を初期化しました。", result.entities);
+        println!("{}件の未解決の障害を初期化で終了しました。", result.incidents);
+        println!(
+            "{}件の送信待ち通知を破棄しました。復旧通知は送りません。",
+            result.pending_notifications
+        );
+        println!(
+            "{}以降の新しい観測から判定し直します。",
+            crate::time::to_rfc3339(result.reset_at)
+        );
+        println!("過去の観測履歴は残しています。");
+    }
+    Ok(0)
+}
+
 /// `sentinel status`.
 pub async fn status(cli: &Cli, json: bool) -> anyhow::Result<i32> {
     let config = Config::load(&cli.config)?;

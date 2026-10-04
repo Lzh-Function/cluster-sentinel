@@ -8,7 +8,9 @@ usage() {
   ./deploy/update.sh VERSION [オプション] [-- Ansibleのオプション]
 
 中央ノードを先に更新し、起動を確認してから下流ノードを更新します。
-VERSIONはv1.0.6のように指定します。先頭のvは省略できます。
+更新時に監視状態と未解決の障害をすべて初期化し、新しい観測から判定し直します。
+VERSIONには更新先の公開済みバージョンをvX.Y.Zの形式で指定します。
+先頭のvは省略できます。state resetに対応したバイナリが必要です。
 
 オプション
   --parent-only       中央ノードだけを更新する
@@ -18,10 +20,10 @@ VERSIONはv1.0.6のように指定します。先頭のvは省略できます。
   --help              この説明を表示する
 
 実行例
-  ./deploy/update.sh v1.0.6 -- -K
-  ./deploy/update.sh v1.0.6 -- --ask-vault-pass -K
-  ./deploy/update.sh v1.0.6 --parent-only
-  ./deploy/update.sh v1.0.6 --agents-only -- -k -K --limit node01
+  ./deploy/update.sh vX.Y.Z -- -K
+  ./deploy/update.sh vX.Y.Z -- --ask-vault-pass -K
+  ./deploy/update.sh vX.Y.Z --parent-only
+  ./deploy/update.sh vX.Y.Z --agents-only -- -k -K --limit node01
 
 中央ノードでは/usr/local/bin/sentinelと/etc/sentinel/config.tomlを使います。
 実行中のsentinel-agentが中央ノードにあれば、そのサービスも再起動します。
@@ -77,7 +79,7 @@ while (($#)); do
 done
 
 [[ $version =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] ||
-    die 'v1.0.6のように更新先のバージョンを指定してください。'
+    die '更新先のバージョンをvX.Y.Zの形式で指定してください。'
 version="v${version#v}"
 [[ $repo =~ ^[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+$ ]] || die '--repoはOWNER/REPOの形式で指定してください。'
 [[ -z ${SUDO_USER:-} || ${SUDO_USER} == root ]] || die 'sudoを付けず、普段Ansibleを実行するユーザーから起動してください。'
@@ -106,6 +108,7 @@ download_dir=
 staged_binary=
 staged_backup=
 replaced=false
+controller_stopped=false
 phase='更新の準備'
 
 cleanup() {
@@ -116,6 +119,9 @@ cleanup() {
     [[ -z $staged_backup ]] || sudo rm -f -- "$staged_backup"
     if ((result != 0)) && [[ $replaced == true ]]; then
         printf '中央ノードのバイナリは%sへ置き換え済みです。自動では元に戻しません。\n前のバイナリは%s.previousに保存しています。\n' "$version" "$binary" >&2
+    fi
+    if ((result != 0)) && [[ $controller_stopped == true ]]; then
+        printf '中央ノードのcontrollerは停止したままです。原因を確認してからサービスを再開してください。\n' >&2
     fi
     exit "$result"
 }
@@ -139,7 +145,7 @@ read_version() {
 }
 
 if [[ $mode != agents-only ]]; then
-    for command_name in curl sha256sum mktemp chmod install cmp cp mv uname sleep; do
+    for command_name in curl sha256sum mktemp chmod install cmp cp mv uname sleep getent id; do
         command -v "$command_name" >/dev/null || die "$command_nameが見つかりません。"
     done
     [[ $(uname -s) == Linux ]] || die 'このスクリプトはLinux用です。'
@@ -168,6 +174,22 @@ if [[ $mode != agents-only ]]; then
     [[ $(read_version "$download_dir/$artefact") == "${version#v}" ]] || die '取得したバイナリのバージョンが指定と異なります。'
     phase='新しいバイナリでの設定の検証'
     sudo -u sentinel "$download_dir/$artefact" --config "$config" config check
+    sudo -u sentinel "$download_dir/$artefact" state reset --help >/dev/null ||
+        die '更新先のバイナリは監視状態の初期化に対応していません。対応したリリースを指定してください。'
+
+    phase='システムログの閲覧権限の設定'
+    if getent group systemd-journal >/dev/null; then
+        service_groups=$(id -nG sentinel)
+        case " $service_groups " in
+            *" systemd-journal "*) ;;
+            *)
+                sudo usermod -aG systemd-journal sentinel
+                printf 'sentinelユーザーにシステムログの閲覧権限を追加しました。\n'
+                ;;
+        esac
+    else
+        printf 'systemd-journalグループがありません。ログの閲覧権限を確認してください。\n' >&2
+    fi
 
     restart_agent=false
     if sudo systemctl is-active --quiet sentinel-agent.service; then
@@ -189,20 +211,28 @@ if [[ $mode != agents-only ]]; then
     else
         printf '中央ノードには同じバイナリが入っています。サービスを再起動して確認します。\n'
     fi
-    # 途中で中断した更新をやり直す場合も、新しいバイナリで起動し直します。
-    phase='中央ノードのサービスの再起動'
-    sudo systemctl restart sentinel-controller.service
-    sudo systemctl is-active --quiet sentinel-controller.service
-    sleep 3
-    sudo systemctl is-active --quiet sentinel-controller.service
-    if [[ $restart_agent == true ]]; then
-        sudo systemctl restart sentinel-agent.service
-        sudo systemctl is-active --quiet sentinel-agent.service
-    fi
 fi
 
 [[ $(read_version "$binary") == "${version#v}" ]] || die "中央ノードが$versionではありません。中央ノードを先に更新してください。"
-sudo systemctl is-active --quiet sentinel-controller.service || die '中央ノードが起動していません。下流の更新は実行しません。'
+if [[ $mode == agents-only ]]; then
+    sudo systemctl is-active --quiet sentinel-controller.service || die '中央ノードが起動していません。下流の更新は実行しません。'
+    sudo -u sentinel "$binary" state reset --help >/dev/null ||
+        die '中央ノードのバイナリは監視状態の初期化に対応していません。中央ノードを先に更新してください。'
+fi
+phase='中央ノードの監視状態の初期化'
+sudo systemctl stop sentinel-controller.service
+controller_stopped=true
+sudo -u sentinel "$binary" --config "$config" state reset
+phase='中央ノードのサービスの再起動'
+sudo systemctl restart sentinel-controller.service
+controller_stopped=false
+sudo systemctl is-active --quiet sentinel-controller.service
+sleep 3
+sudo systemctl is-active --quiet sentinel-controller.service
+if [[ ${restart_agent:-false} == true ]]; then
+    sudo systemctl restart sentinel-agent.service
+    sudo systemctl is-active --quiet sentinel-agent.service
+fi
 
 show_status() {
     local result=0

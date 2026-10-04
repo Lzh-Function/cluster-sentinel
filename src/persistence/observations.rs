@@ -16,6 +16,29 @@ use crate::time::{now, parse_rfc3339, to_rfc3339, Timestamp};
 
 use super::{SqliteStore, StoreError};
 
+// Enumerate streams using the index, then load only one row from each stream.
+// Ranking complete observation rows sorts every historical payload on each
+// diagnosis pass, which can hold the controller lock long enough for agents'
+// uploads to time out. Keep the timestamp checks inside the seek so an invalid
+// newest row does not hide an older valid observation.
+const LATEST_OBSERVATIONS_SQL: &str = "WITH streams AS (
+         SELECT DISTINCT probe_id, COALESCE(observer_entity_id, '') AS observer
+         FROM observations WHERE target_entity_id = ?1
+     )
+     SELECT o.id, o.probe_id, o.target_entity_id, o.observer_entity_id, o.agent_session_id,
+            o.started_at, o.finished_at, o.duration_ms, o.status, o.payload, o.evidence,
+            o.error_code, o.error_message
+     FROM streams
+     JOIN observations AS o ON o.rowid = (
+         SELECT rowid FROM observations
+         WHERE target_entity_id = ?1 AND probe_id = streams.probe_id
+           AND COALESCE(observer_entity_id, '') = streams.observer
+           AND finished_at <= ?2
+           AND julianday(finished_at) <= julianday(ingested_at) + ?3
+           AND finished_at >= ?4 AND ingested_at >= ?4
+         ORDER BY finished_at DESC, rowid DESC LIMIT 1
+     )";
+
 /// How many rows an ingestion actually inserted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestOutcome {
@@ -291,29 +314,25 @@ impl SqliteStore {
     /// disappears in step with the eviction rather than with the cluster.
     /// That looks exactly like a flapping fault, and it was reported as one.
     pub async fn latest_observations(&self, entity: EntityId) -> Result<Vec<Observation>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT id, probe_id, target_entity_id, observer_entity_id, agent_session_id, started_at,
-                    finished_at, duration_ms, status, payload, evidence, error_code, error_message
-             FROM (
-                 SELECT id, probe_id, target_entity_id, observer_entity_id, agent_session_id, started_at,
-                        finished_at, duration_ms, status, payload, evidence, error_code, error_message,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY probe_id, COALESCE(observer_entity_id, '')
-                            ORDER BY finished_at DESC, rowid DESC
-                        ) AS rank
-                 FROM observations
-                 WHERE target_entity_id = ?1 AND finished_at <= ?2
-                   AND julianday(finished_at) <= julianday(ingested_at) + ?3
-             )
-             WHERE rank = 1",
-        )
-        .bind(entity.to_string())
-        .bind(to_rfc3339(
-            now() + chrono::Duration::seconds(crate::observation::MAX_FUTURE_SKEW_SECONDS),
-        ))
-        .bind(crate::observation::MAX_FUTURE_SKEW_SECONDS as f64 / 86400.0)
-        .fetch_all(self.pool())
-        .await?;
+        self.latest_observations_since(entity, None).await
+    }
+
+    /// Current evidence after a reset, while the unrestricted method still
+    /// serves historical inventory and inspection.
+    pub async fn latest_observations_since(
+        &self,
+        entity: EntityId,
+        cutoff: Option<Timestamp>,
+    ) -> Result<Vec<Observation>, StoreError> {
+        let rows = sqlx::query(LATEST_OBSERVATIONS_SQL)
+            .bind(entity.to_string())
+            .bind(to_rfc3339(
+                now() + chrono::Duration::seconds(crate::observation::MAX_FUTURE_SKEW_SECONDS),
+            ))
+            .bind(crate::observation::MAX_FUTURE_SKEW_SECONDS as f64 / 86400.0)
+            .bind(cutoff.map(to_rfc3339).unwrap_or_default())
+            .fetch_all(self.pool())
+            .await?;
 
         rows.iter().map(decode_observation).collect()
     }
@@ -717,6 +736,86 @@ mod tests {
     async fn an_entity_with_no_observations_yields_none() {
         let (store, entity) = store_with_entity("node-a").await;
         assert!(store.latest_observations(entity).await.expect("latest").is_empty());
+    }
+
+    #[tokio::test]
+    async fn latest_observations_keep_local_and_remote_streams_and_break_time_ties_by_ingestion() {
+        let (store, entity) = store_with_entity("node-a").await;
+        let peer = ManagedEntity::new("lab", EntityType::Host, "peer-a");
+        store.save_entity(&peer).await.expect("peer");
+
+        let first = observation(entity, ProbeStatus::Failed);
+        let mut replacement = observation(entity, ProbeStatus::Ok);
+        replacement.started_at = first.started_at;
+        replacement.finished_at = first.finished_at;
+        let mut remote = first.clone().with_observer(peer.id);
+        remote.id = ObservationId::new();
+        let mut older = observation(entity, ProbeStatus::Failed);
+        older.finished_at = first.finished_at - chrono::Duration::seconds(60);
+        let slow = Observation::new(ProbeId::new("slurm.node"), entity, ProbeStatus::Ok);
+
+        store
+            .ingest_observations(&[first.clone(), replacement.clone(), remote.clone(), older, slow.clone()])
+            .await
+            .expect("ingest");
+        // Replaying an older observation must not win an equal-time tie.
+        store.ingest_observations(&[first]).await.expect("replay");
+        let mut latest = store.latest_observations(entity).await.expect("latest");
+        let mut expected = vec![replacement, remote, slow];
+        latest.sort_by_key(|o| o.id);
+        expected.sort_by_key(|o| o.id);
+        assert_eq!(latest, expected);
+    }
+
+    #[tokio::test]
+    async fn invalid_newest_times_do_not_hide_the_last_valid_observation() {
+        let (store, entity) = store_with_entity("node-a").await;
+        let good = observation(entity, ProbeStatus::Failed);
+        let mut future = observation(entity, ProbeStatus::Ok);
+        future.finished_at = now() + chrono::Duration::days(1);
+        // This timestamp is within the current skew allowance, but was too
+        // far ahead when ingested and must remain excluded.
+        let mut poisoned = observation(entity, ProbeStatus::Ok);
+        poisoned.finished_at = now() + chrono::Duration::seconds(1);
+        store
+            .ingest_observations(&[good.clone(), future, poisoned.clone()])
+            .await
+            .expect("ingest");
+        sqlx::query("UPDATE observations SET ingested_at = ? WHERE id = ?")
+            .bind(to_rfc3339(now() - chrono::Duration::days(1)))
+            .bind(poisoned.id.to_string())
+            .execute(store.pool())
+            .await
+            .expect("original ingestion time");
+        assert_eq!(store.latest_observations(entity).await.expect("latest"), vec![good]);
+    }
+
+    #[tokio::test]
+    async fn latest_observations_do_not_sort_the_history_or_scan_the_observation_table() {
+        let (store, entity) = store_with_entity("node-a").await;
+        let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {LATEST_OBSERVATIONS_SQL}"))
+            .bind(entity.to_string())
+            .bind(to_rfc3339(now()))
+            .bind(crate::observation::MAX_FUTURE_SKEW_SECONDS as f64 / 86400.0)
+            .bind("")
+            .fetch_all(store.pool())
+            .await
+            .expect("query plan");
+        let details: Vec<String> = plan.iter().map(|row| row.get("detail")).collect();
+        assert!(
+            details
+                .iter()
+                .filter(|d| d.contains("idx_observations_stream_time"))
+                .count()
+                >= 2,
+            "both stream enumeration and latest-row selection must use the index: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|d| !d.contains("TEMP B-TREE") && !d.starts_with("SCAN observations")),
+            "historical payloads must not be scanned or sorted: {details:?}"
+        );
     }
 
     #[tokio::test]
