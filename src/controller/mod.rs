@@ -82,6 +82,32 @@ fn storage_providers(inventory: &Inventory) -> BTreeMap<EntityId, Vec<EntityId>>
     by_host
 }
 
+/// Agent registration reports whether NVIDIA monitoring is available locally.
+/// Older registrations have no explicit flag; use their capability list.
+fn configure_gpu_monitoring(
+    engine: &mut StateEngine,
+    entity: &crate::entity::ManagedEntity,
+) -> Option<crate::state::StateTransition> {
+    if entity.entity_type != EntityType::Host
+        || !entity
+            .discovery_sources
+            .contains(&crate::entity::DiscoverySource::AgentRegistration)
+    {
+        return None;
+    }
+    let enabled = entity
+        .metadata
+        .get("agent")
+        .and_then(|agent| agent.get("gpu_nvidia_monitoring"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| entity.capabilities.has(crate::capability::well_known::GPU_NVIDIA));
+    engine.set_probe_enabled(
+        entity.id,
+        &crate::probes::ProbeId::new(crate::probes::gpu::PROBE_ID),
+        enabled,
+    )
+}
+
 impl Controller {
     /// Build a controller from configuration, wiring up the enabled providers.
     pub async fn new(config: Config, store: SqliteStore) -> Result<Self, StoreError> {
@@ -99,6 +125,7 @@ impl Controller {
 
         let mut engine = StateEngine::new();
         register_builtin_probes(&mut engine);
+        engine.set_observation_cutoff(store.state_reset_at(&config.environment).await?);
 
         // Resume from what is already known, so a restart does not re-learn
         // every host's state from scratch.
@@ -106,12 +133,21 @@ impl Controller {
             engine.seed(state);
         }
 
+        let inventory = store.load_inventory(&config.environment).await?;
+        let mut transitions = Vec::new();
+        for entity in inventory.entities() {
+            transitions.extend(configure_gpu_monitoring(&mut engine, entity));
+        }
         let streams = store.load_state_streams(&config.environment).await?;
         if streams.is_empty() {
             // Upgrade old databases: attach source timestamps to legacy state
             // so old healthy values cannot outlive their observations.
-            for entity in store.load_inventory(&config.environment).await?.entities() {
-                engine.ingest_all(&store.latest_observations(entity.id).await?);
+            for entity in inventory.entities() {
+                engine.ingest_all(
+                    &store
+                        .latest_observations_since(entity.id, engine.observation_cutoff())
+                        .await?,
+                );
             }
         } else {
             engine.seed_streams(streams);
@@ -128,7 +164,10 @@ impl Controller {
         store.save_incidents(&config.environment, &active).await?;
         incidents.seed(resumable);
 
-        let storage_providers = storage_providers(&store.load_inventory(&config.environment).await?);
+        if !transitions.is_empty() {
+            store.save_engine(&config.environment, &engine, &transitions).await?;
+        }
+        let storage_providers = storage_providers(&inventory);
 
         Ok(Self {
             config,

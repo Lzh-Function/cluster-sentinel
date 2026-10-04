@@ -50,6 +50,7 @@ pub fn snapshot_from_registration(request: &RegisterRequest) -> InventorySnapsho
         "agent": {
             "version": request.agent_version,
             "protocol_version": request.protocol_version,
+            "gpu_nvidia_monitoring": request.capabilities.has(well_known::GPU_NVIDIA),
         },
         "host": {
             "fqdn": request.fqdn,

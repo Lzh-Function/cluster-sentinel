@@ -226,7 +226,7 @@ impl SqliteStore {
 
     pub async fn load_resumable_incidents(&self, environment: &str) -> Result<Vec<Incident>, StoreError> {
         let cutoff = now() - chrono::Duration::minutes(crate::incident::REOPEN_WINDOW_MINUTES);
-        let rows = sqlx::query("SELECT id, fingerprint, status, severity, started_at, ended_at FROM incidents WHERE environment = ? AND (status IN ('open', 'recovering', 'acknowledged') OR (status = 'resolved' AND ended_at >= ?)) ORDER BY started_at DESC")
+        let rows = sqlx::query("SELECT id, fingerprint, status, severity, started_at, ended_at FROM incidents WHERE environment = ?1 AND started_at >= COALESCE((SELECT reset_at FROM state_resets WHERE environment = ?1), '') AND (status IN ('open', 'recovering', 'acknowledged') OR (status = 'resolved' AND ended_at >= ?2)) ORDER BY started_at DESC")
             .bind(environment).bind(to_rfc3339(cutoff)).fetch_all(self.pool()).await?;
         let mut incidents = Vec::new();
         for row in rows {

@@ -138,6 +138,7 @@ impl Notification {
             crate::incident::IncidentStatus::Acknowledged => "確認済み・対応中",
             crate::incident::IncidentStatus::Recovering => "復旧途中",
             crate::incident::IncidentStatus::Resolved => "復旧確認済み",
+            crate::incident::IncidentStatus::Reset => "初期化で終了",
             crate::incident::IncidentStatus::Suppressed => "通知を抑止中",
         };
         body.push_str(&format!(
@@ -267,7 +268,7 @@ pub fn notifications_for_incident(incident: &Incident) -> Vec<Notification> {
     match incident.status {
         IncidentStatus::Resolved => push(Trigger::Resolved),
         IncidentStatus::Recovering => push(Trigger::Recovering),
-        IncidentStatus::Suppressed => {}
+        IncidentStatus::Suppressed | IncidentStatus::Reset => {}
         IncidentStatus::Open | IncidentStatus::Acknowledged => {
             push(Trigger::Opened);
             let lifecycle = incident

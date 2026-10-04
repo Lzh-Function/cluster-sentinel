@@ -82,6 +82,8 @@ pub struct StateEngine {
     mappings: BTreeMap<ProbeId, ProbeMapping>,
     streams: HashMap<(EntityId, ProbeId, Option<EntityId>), StateStream>,
     states: BTreeMap<EntityId, EntityState>,
+    disabled: std::collections::HashSet<(EntityId, ProbeId)>,
+    observation_cutoff: Option<Timestamp>,
 }
 
 impl StateEngine {
@@ -101,12 +103,66 @@ impl StateEngine {
         self.mappings.contains_key(probe_id)
     }
 
+    /// Whether inventory allows this probe to contribute to this entity.
+    pub fn probe_enabled(&self, entity: EntityId, probe: &ProbeId) -> bool {
+        !self.disabled.contains(&(entity, probe.clone()))
+    }
+
+    pub fn observation_cutoff(&self) -> Option<Timestamp> {
+        self.observation_cutoff
+    }
+
+    pub fn set_observation_cutoff(&mut self, cutoff: Option<Timestamp>) {
+        self.observation_cutoff = cutoff;
+    }
+
+    /// Exclude a retired probe without deleting its observations or streams.
+    /// Re-enabling requires new measurements instead of reviving old health.
+    pub fn set_probe_enabled(&mut self, entity: EntityId, probe: &ProbeId, enabled: bool) -> Option<StateTransition> {
+        let component = self.mappings.get(probe)?.component;
+        let changed = if enabled {
+            self.disabled.remove(&(entity, probe.clone()))
+        } else {
+            self.disabled.insert((entity, probe.clone()))
+        };
+        if !changed {
+            return None;
+        }
+        if enabled {
+            for stream in self
+                .streams
+                .values_mut()
+                .filter(|s| s.entity == entity && &s.probe == probe)
+            {
+                stream.expired = true;
+                stream.state.health = Health::Unknown;
+                stream.debouncer.force(Health::Unknown);
+            }
+        }
+        if self
+            .states
+            .get(&entity)
+            .is_some_and(|s| s.components.contains_key(&component))
+        {
+            self.recompute(entity, component)
+        } else {
+            None
+        }
+    }
+
     /// Fold one observation in, returning any state change it caused.
     ///
     /// An observation from an unregistered probe is stored as history by the
     /// caller but changes no state: an integration that has not said what its
     /// probe means must not be guessed at.
     pub fn ingest(&mut self, observation: &Observation) -> Option<StateTransition> {
+        if !self.probe_enabled(observation.target_entity, &observation.probe_id)
+            || self
+                .observation_cutoff
+                .is_some_and(|cutoff| observation.finished_at < cutoff)
+        {
+            return None;
+        }
         if observation.finished_at
             > crate::time::now() + chrono::Duration::seconds(crate::observation::MAX_FUTURE_SKEW_SECONDS)
         {
@@ -183,7 +239,7 @@ impl StateEngine {
         let contributors: Vec<_> = self
             .streams
             .values()
-            .filter(|s| s.entity == entity && s.component == component)
+            .filter(|s| s.entity == entity && s.component == component && self.probe_enabled(entity, &s.probe))
             .collect();
         // A reassigned observer's old answer stops voting when other observers
         // still measure this same probe. A missing *probe* remains Unknown.
@@ -199,8 +255,8 @@ impl StateEngine {
             .collect();
         let worst = contributors
             .iter()
-            .max_by_key(|s| (s.state.health.severity_rank(), s.probe.clone(), s.observer))?;
-        let mut combined = worst.state.clone();
+            .max_by_key(|s| (s.state.health.severity_rank(), s.probe.clone(), s.observer));
+        let mut combined = worst.map_or_else(|| ComponentState::new(Health::NotApplicable), |s| s.state.clone());
         combined.evidence = contributors
             .iter()
             .flat_map(|s| s.state.evidence.iter().copied())
@@ -234,6 +290,9 @@ impl StateEngine {
     ) -> Vec<StateTransition> {
         let mut changed = std::collections::BTreeSet::new();
         for stream in self.streams.values_mut() {
+            if self.disabled.contains(&(stream.entity, stream.probe.clone())) {
+                continue;
+            }
             if at - stream.finished_at > horizon(stream) && stream.state.health != Health::NotApplicable {
                 stream.expired = true;
                 stream.state.health = Health::Unknown;
@@ -246,6 +305,9 @@ impl StateEngine {
 
     /// Whether this source's current verdict has met the recovery threshold.
     pub fn confirms_health(&self, observation: &Observation) -> bool {
+        if !self.probe_enabled(observation.target_entity, &observation.probe_id) {
+            return false;
+        }
         self.streams
             .get(&(
                 observation.target_entity,
@@ -337,6 +399,24 @@ mod tests {
         let mut engine = StateEngine::new();
         engine.register(probe, mapping);
         engine
+    }
+
+    #[test]
+    fn disabling_one_probe_does_not_hide_other_failures_in_its_component() {
+        let mut engine = engine_with("gpu", ProbeMapping::immediate(StateComponent::Accelerator));
+        engine.register("other", ProbeMapping::immediate(StateComponent::Accelerator));
+        engine.ingest(&observation("gpu", entity("a"), ProbeStatus::Failed));
+        engine.ingest(&observation("other", entity("a"), ProbeStatus::Failed));
+        engine.set_probe_enabled(entity("a"), &ProbeId::new("gpu"), false);
+        assert_eq!(
+            engine
+                .state(entity("a"))
+                .unwrap()
+                .component(StateComponent::Accelerator),
+            Health::Unavailable
+        );
+        engine.ingest(&observation("other", entity("a"), ProbeStatus::Ok));
+        assert_eq!(engine.state(entity("a")).unwrap().overall, Health::Healthy);
     }
 
     #[test]

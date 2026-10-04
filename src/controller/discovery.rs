@@ -278,6 +278,15 @@ impl Controller {
         self.store().save_inventory(&inventory).await?;
         self.reconcile_snapshot_capabilities(snapshot).await?;
         self.storage_providers = super::storage_providers(&inventory);
+        let mut candidate = self.engine.clone();
+        let mut transitions = Vec::new();
+        for entity in &snapshot.entities {
+            transitions.extend(super::configure_gpu_monitoring(&mut candidate, entity));
+        }
+        if !transitions.is_empty() {
+            self.store().save_engine(&environment, &candidate, &transitions).await?;
+        }
+        self.engine = candidate;
         Ok(inventory)
     }
 

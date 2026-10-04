@@ -202,6 +202,17 @@ impl LocalProbes {
             self.scheduled[index].next_due = Instant::now() + definition.interval;
         }
 
+        // A command removed after startup cannot provide more GPU readings.
+        // Keep the NotApplicable observation for upload, then stop scheduling
+        // this probe until the next agent restart redetects capabilities.
+        if observations.iter().any(|o| {
+            o.probe_id.as_str() == crate::probes::gpu::PROBE_ID
+                && o.status == crate::observation::ProbeStatus::NotApplicable
+                && o.error_code.as_deref() == Some("nvidia_smi_missing")
+        }) {
+            self.scheduled
+                .retain(|s| s.probe.definition().id.as_str() != crate::probes::gpu::PROBE_ID);
+        }
         observations
     }
 
@@ -270,6 +281,36 @@ mod tests {
             self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Observation::new(self.definition.id.clone(), context.target_entity, ProbeStatus::Ok)
         }
+    }
+
+    struct MissingGpuProbe(ProbeDefinition);
+
+    #[async_trait]
+    impl Probe for MissingGpuProbe {
+        fn definition(&self) -> &ProbeDefinition {
+            &self.0
+        }
+
+        async fn collect(&self, context: &ProbeContext) -> Observation {
+            Observation::new(self.0.id.clone(), context.target_entity, ProbeStatus::NotApplicable)
+                .with_error("nvidia_smi_missing", "command not found")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_gpu_command_removed_after_startup_stops_only_gpu_monitoring() {
+        let missing = Arc::new(MissingGpuProbe(ProbeDefinition::new(crate::probes::gpu::PROBE_ID)));
+        let (host, runs) = CountingProbe::new(ProbeDefinition::new("host.metrics"));
+        let mut probes = LocalProbes::with_probes(entity(), CapabilitySet::new(), vec![missing, host]);
+        let first = probes.run_all().await;
+        assert!(first
+            .iter()
+            .any(|o| o.error_code.as_deref() == Some("nvidia_smi_missing")));
+        assert_eq!(probes.probe_ids(), vec!["host.metrics"]);
+        let second = probes.run_all().await;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].probe_id.as_str(), "host.metrics");
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

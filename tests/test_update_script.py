@@ -62,6 +62,18 @@ elif name == "uname":
     print("Linux" if args == ["-s"] else os.environ.get("UPDATE_TEST_ARCH", "x86_64"))
 elif name == "sleep":
     pass
+elif name == "getent":
+    assert args == ["group", "systemd-journal"]
+    if os.environ.get("NO_JOURNAL_GROUP"):
+        sys.exit(2)
+    print("systemd-journal:x:190:")
+elif name == "id":
+    assert args == ["-nG", "sentinel"]
+    print(os.environ.get("UPDATE_TEST_GROUPS", "sentinel"))
+elif name == "usermod":
+    assert args == ["-aG", "systemd-journal", "sentinel"]
+    if os.environ.get("FAIL_JOURNAL_GROUP"):
+        sys.exit(1)
 else:
     raise RuntimeError(name)
 '''
@@ -85,6 +97,12 @@ elif args[-2:] == ["config", "check"]:
         sys.exit(1)
 elif args[-1:] == ["status"]:
     sys.exit(int(os.environ.get("STATUS_EXIT", "0")))
+elif args[-3:] == ["state", "reset", "--help"]:
+    if os.environ.get("NO_STATE_RESET"):
+        sys.exit(2)
+elif args[-2:] == ["state", "reset"]:
+    if os.environ.get("FAIL_STATE_RESET"):
+        sys.exit(1)
 else:
     raise RuntimeError(args)
 '''
@@ -100,7 +118,7 @@ class UpdateScriptTests(unittest.TestCase):
         dispatcher = self.bin / "mock-command"
         dispatcher.write_text(FAKE_COMMAND)
         dispatcher.chmod(0o755)
-        for name in ("sudo", "install", "curl", "systemctl", "ansible-playbook", "uname", "sleep"):
+        for name in ("sudo", "install", "curl", "systemctl", "ansible-playbook", "uname", "sleep", "getent", "id", "usermod"):
             (self.bin / name).symlink_to(dispatcher)
 
         deploy = self.directory / "checkout" / "deploy"
@@ -193,6 +211,53 @@ class UpdateScriptTests(unittest.TestCase):
         self.inventory.unlink()
         self.assert_original_kept(self.run_update("v1.0.5"))
 
+    def test_parent_journal_permission_is_added_before_restarting_services(self):
+        result = self.run_update("v1.0.5", "--parent-only", ACTIVE_AGENT="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call[1] for call in self.calls("usermod")], [["-aG", "systemd-journal", "sentinel"]])
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        added = next(i for i, call in enumerate(calls) if call[0] == "usermod")
+        restarted = [i for i, call in enumerate(calls) if call[0] == "systemctl" and call[1][0] == "restart"]
+        self.assertEqual(len(restarted), 2)
+        self.assertTrue(all(added < i for i in restarted))
+
+    def test_existing_journal_membership_is_kept(self):
+        result = self.run_update("v1.0.5", "--parent-only", UPDATE_TEST_GROUPS="sentinel systemd-journal extra-group")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls("usermod"), [])
+
+    def test_journal_permission_failure_keeps_original_and_blocks_downstream(self):
+        self.assert_original_kept(self.run_update("v1.0.5", FAIL_JOURNAL_GROUP="1"))
+
+    def test_missing_journal_group_reports_required_permission_check(self):
+        result = self.run_update("v1.0.5", "--parent-only", NO_JOURNAL_GROUP="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls("usermod"), [])
+        self.assertIn("ログの閲覧権限を確認", result.stderr)
+
+    def test_state_reset_runs_after_controller_stops_and_before_restart(self):
+        result = self.run_update("v1.0.5", "--parent-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        stopped = next(i for i, call in enumerate(calls) if call[:2] == ["systemctl", ["stop", "sentinel-controller.service"]])
+        reset = [i for i, call in enumerate(calls) if call[0] == "sentinel" and call[1][-2:] == ["state", "reset"]]
+        restarted = next(i for i, call in enumerate(calls) if call[:2] == ["systemctl", ["restart", "sentinel-controller.service"]])
+        self.assertEqual(len(reset), 1)
+        self.assertLess(stopped, reset[0])
+        self.assertLess(reset[0], restarted)
+
+    def test_failed_state_reset_blocks_downstream_and_keeps_controller_stopped(self):
+        result = self.run_update("v1.0.5", FAIL_STATE_RESET="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls("ansible-playbook"), [])
+        self.assertFalse(any(call[1][0] == "restart" for call in self.calls("systemctl")))
+        self.assertIn("controllerは停止したまま", result.stderr)
+
+    def test_binary_without_reset_support_is_rejected_before_changing_services(self):
+        result = self.run_update("v1.0.5", NO_STATE_RESET="1")
+        self.assert_original_kept(result)
+        self.assertFalse(any(call[1][0] == "stop" for call in self.calls("systemctl")))
+
     def test_download_checksum_config_and_version_failures_keep_original(self):
         for failure in ("FAIL_DOWNLOAD", "BAD_CHECKSUM", "FAIL_CONFIG", "FAIL_VERSION", "wrong_version"):
             with self.subTest(failure=failure):
@@ -224,7 +289,10 @@ class UpdateScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.calls("ansible-playbook")), 1)
         self.assertEqual(self.calls("curl"), [])
-        self.assertFalse(any(call[1][0] == "restart" for call in self.calls("systemctl")))
+        self.assertEqual(
+            [call[1] for call in self.calls("systemctl") if call[1][0] == "restart"],
+            [["restart", "sentinel-controller.service"]],
+        )
 
     def test_repeat_update_restarts_parent_and_preserves_previous_backup(self):
         self.binary.write_bytes(self.download.read_bytes())

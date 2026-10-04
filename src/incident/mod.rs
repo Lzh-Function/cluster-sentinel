@@ -31,6 +31,8 @@ pub enum IncidentStatus {
     Recovering,
     /// Everything involved is healthy again.
     Resolved,
+    /// Closed by a monitoring reset; recovery has not been confirmed.
+    Reset,
     /// Deliberately silenced, e.g. by a maintenance window.
     Suppressed,
 }
@@ -43,6 +45,7 @@ impl IncidentStatus {
             IncidentStatus::Acknowledged => "acknowledged",
             IncidentStatus::Recovering => "recovering",
             IncidentStatus::Resolved => "resolved",
+            IncidentStatus::Reset => "reset",
             IncidentStatus::Suppressed => "suppressed",
         }
     }
@@ -54,6 +57,7 @@ impl IncidentStatus {
             "acknowledged" => IncidentStatus::Acknowledged,
             "recovering" => IncidentStatus::Recovering,
             "resolved" => IncidentStatus::Resolved,
+            "reset" => IncidentStatus::Reset,
             "suppressed" => IncidentStatus::Suppressed,
             _ => return None,
         })
@@ -159,7 +163,7 @@ pub struct Incident {
     pub severity: Severity,
     /// When the incident began.
     pub started_at: Timestamp,
-    /// When it was resolved.
+    /// When it was resolved or closed by a monitoring reset.
     pub ended_at: Option<Timestamp>,
     /// Entities showing symptoms.
     pub affected_entities: Vec<EntityId>,
@@ -302,6 +306,7 @@ mod tests {
             IncidentStatus::Acknowledged,
             IncidentStatus::Recovering,
             IncidentStatus::Resolved,
+            IncidentStatus::Reset,
             IncidentStatus::Suppressed,
         ] {
             assert_eq!(IncidentStatus::parse(status.as_str()), Some(status));
@@ -314,6 +319,7 @@ mod tests {
         assert!(IncidentStatus::Acknowledged.is_active());
         assert!(IncidentStatus::Recovering.is_active());
         assert!(!IncidentStatus::Resolved.is_active());
+        assert!(!IncidentStatus::Reset.is_active());
         assert!(!IncidentStatus::Suppressed.is_active());
     }
 

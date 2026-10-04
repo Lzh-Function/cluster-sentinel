@@ -80,6 +80,11 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// 現在の監視状態を管理します。
+    State {
+        #[command(subcommand)]
+        command: StateCommand,
+    },
     /// Run one inventory discovery cycle now.
     Discover {
         /// Emit JSON instead of text.
@@ -196,6 +201,15 @@ pub enum Command {
     /// Report what this host looks like to Sentinel, and why.
     Doctor {
         /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StateCommand {
+    /// 監視状態と未解決の障害を初期化します。controllerを停止してから実行してください。
+    Reset {
         #[arg(long)]
         json: bool,
     },
@@ -367,6 +381,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Version { json } => version_cmd::run(*json),
         Command::Config { command } => config_cmd::run(&cli, command).await,
         Command::Status { json } => run_cmd::status(&cli, *json).await,
+        Command::State { command } => match command {
+            StateCommand::Reset { json } => run_cmd::reset_state(&cli, *json).await,
+        },
         Command::Discover { json } => run_cmd::discover(&cli, *json).await,
         Command::Entity { command } => run_cmd::entity(&cli, command).await,
         Command::Dependency { command } => run_cmd::dependency(&cli, command).await,
